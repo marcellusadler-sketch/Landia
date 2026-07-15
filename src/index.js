@@ -379,6 +379,35 @@ async function aiGemini(request, env) {
 /* Bezwen: env.MATCH_STATE (KV binding), env.SPORTS_API_KEY_V2 (Secret),
    env.FIREBASE_SERVICE_ACCOUNT (Secret — tout kontni fichye JSON la). */
 
+// Tradiksyon mesaj notifikasyon yo — matche ak lang moun nan chwazi nan app
+// la (ht/fr/en/es), anrejistre nan chan "lang" doc fcmTokens la.
+const NOTIF_TEXT = {
+  ht: {
+    matchStart: (h, a) => ({ title: `⚽ Match kòmanse!`, body: `${h} vs ${a} vin kòmanse.` }),
+    goal: (scorer, h, a, hs, as_) => ({ title: `⚽ GÒL! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
+    matchEnd: (h, a, hs, as_) => ({ title: `🏁 Match fini`, body: `${h} ${hs} - ${as_} ${a}` }),
+  },
+  fr: {
+    matchStart: (h, a) => ({ title: `⚽ Le match a commencé !`, body: `${h} vs ${a} vient de commencer.` }),
+    goal: (scorer, h, a, hs, as_) => ({ title: `⚽ BUT ! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
+    matchEnd: (h, a, hs, as_) => ({ title: `🏁 Match terminé`, body: `${h} ${hs} - ${as_} ${a}` }),
+  },
+  en: {
+    matchStart: (h, a) => ({ title: `⚽ Match started!`, body: `${h} vs ${a} has kicked off.` }),
+    goal: (scorer, h, a, hs, as_) => ({ title: `⚽ GOAL! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
+    matchEnd: (h, a, hs, as_) => ({ title: `🏁 Match finished`, body: `${h} ${hs} - ${as_} ${a}` }),
+  },
+  es: {
+    matchStart: (h, a) => ({ title: `⚽ ¡Comenzó el partido!`, body: `${h} vs ${a} ha comenzado.` }),
+    goal: (scorer, h, a, hs, as_) => ({ title: `⚽ ¡GOL! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
+    matchEnd: (h, a, hs, as_) => ({ title: `🏁 Partido finalizado`, body: `${h} ${hs} - ${as_} ${a}` }),
+  },
+};
+function notifText(lang, type, ...args) {
+  const dict = NOTIF_TEXT[lang] || NOTIF_TEXT.ht;
+  return dict[type](...args);
+}
+
 async function checkMatchesAndNotify(env) {
   const log = { checked: 0, notifications: 0, errors: [], statusesSeen: [] };
 
@@ -402,29 +431,17 @@ async function checkMatchesAndNotify(env) {
 
       if (!prev) {
         if (status === "In Progress" || status === "1H") {
-          toNotify.push({
-            title: `⚽ Match kòmanse!`,
-            body: `${ev.strHomeTeam} vs ${ev.strAwayTeam} vin kòmanse.`,
-          });
+          toNotify.push({ type: "matchStart", h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null });
         }
       } else {
         if (homeScore > prev.homeScore) {
-          toNotify.push({
-            title: `⚽ GÒL! ${ev.strHomeTeam}`,
-            body: `${ev.strHomeTeam} ${homeScore} - ${awayScore} ${ev.strAwayTeam}`,
-          });
+          toNotify.push({ type: "goal", h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strHomeTeam });
         }
         if (awayScore > prev.awayScore) {
-          toNotify.push({
-            title: `⚽ GÒL! ${ev.strAwayTeam}`,
-            body: `${ev.strHomeTeam} ${homeScore} - ${awayScore} ${ev.strAwayTeam}`,
-          });
+          toNotify.push({ type: "goal", h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strAwayTeam });
         }
         if (prev.status !== "Match Finished" && status === "Match Finished") {
-          toNotify.push({
-            title: `🏁 Match fini`,
-            body: `${ev.strHomeTeam} ${homeScore} - ${awayScore} ${ev.strAwayTeam}`,
-          });
+          toNotify.push({ type: "matchEnd", h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null });
         }
       }
 
@@ -441,10 +458,16 @@ async function checkMatchesAndNotify(env) {
     const projectId = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT).project_id;
     const tokens = await getFcmTokens(env, accessToken, projectId);
 
-    for (const notif of toNotify) {
-      for (const token of tokens) {
+    for (const ev of toNotify) {
+      for (const t of tokens) {
         try {
-          await sendPush(accessToken, projectId, token, notif.title, notif.body);
+          const { title, body } =
+            ev.type === "matchStart"
+              ? notifText(t.lang, "matchStart", ev.h, ev.a)
+              : ev.type === "matchEnd"
+              ? notifText(t.lang, "matchEnd", ev.h, ev.a, ev.hs, ev.as_)
+              : notifText(t.lang, "goal", ev.scorer, ev.h, ev.a, ev.hs, ev.as_);
+          await sendPush(accessToken, projectId, t.token, title, body);
           log.notifications++;
         } catch (e) {
           log.errors.push(e.message);
@@ -537,8 +560,11 @@ async function getFcmTokens(env, accessToken, projectId) {
   const data = await res.json();
   if (!data.documents) return [];
   return data.documents
-    .map((doc) => doc.fields?.token?.stringValue)
-    .filter(Boolean);
+    .map((doc) => ({
+      token: doc.fields?.token?.stringValue,
+      lang: doc.fields?.lang?.stringValue || "ht",
+    }))
+    .filter((t) => Boolean(t.token));
 }
 
 async function sendPush(accessToken, projectId, token, title, body) {
