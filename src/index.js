@@ -417,33 +417,52 @@ async function aiGemini(request, env) {
 /* Bezwen: env.MATCH_STATE (KV binding), env.SPORTS_API_KEY_V2 (Secret),
    env.FIREBASE_SERVICE_ACCOUNT (Secret — tout kontni fichye JSON la). */
 
+// Spò nou siveye an tan reyèl pou notifikasyon yo (pa sèlman Soccer ankò).
+const LIVE_SPORTS = ["Soccer", "Basketball", "American Football", "Baseball", "Ice Hockey"];
+
+// Icon ki reprezante chak spò — konsa notifikasyon an pa toujou parèt ak
+// yon boul foutbòl menm lè se yon match baskètbòl/foutbòl ameriken/elatriye.
+const SPORT_ICON = {
+  Soccer: "⚽",
+  Basketball: "🏀",
+  "American Football": "🏈",
+  Baseball: "⚾",
+  "Ice Hockey": "🏒",
+};
+
 // Tradiksyon mesaj notifikasyon yo — matche ak lang moun nan chwazi nan app
-// la (ht/fr/en/es), anrejistre nan chan "lang" doc fcmTokens la.
+// la (ht/fr/en/es), anrejistre nan chan "lang" doc fcmTokens la. Titr yo pa
+// gen okenn icon "codé an dur" ankò — icon ki koresponn ak spò a mete devan
+// pa notifText() pi ba, dinamikman.
 const NOTIF_TEXT = {
   ht: {
-    matchStart: (h, a) => ({ title: `⚽ Match kòmanse!`, body: `${h} vs ${a} vin kòmanse.` }),
-    goal: (scorer, h, a, hs, as_) => ({ title: `⚽ GÒL! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
+    matchStart: (h, a) => ({ title: `Match kòmanse!`, body: `${h} vs ${a} vin kòmanse.` }),
+    goal: (scorer, h, a, hs, as_) => ({ title: `GÒL! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
     matchEnd: (h, a, hs, as_) => ({ title: `🏁 Match fini`, body: `${h} ${hs} - ${as_} ${a}` }),
   },
   fr: {
-    matchStart: (h, a) => ({ title: `⚽ Le match a commencé !`, body: `${h} vs ${a} vient de commencer.` }),
-    goal: (scorer, h, a, hs, as_) => ({ title: `⚽ BUT ! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
+    matchStart: (h, a) => ({ title: `Le match a commencé !`, body: `${h} vs ${a} vient de commencer.` }),
+    goal: (scorer, h, a, hs, as_) => ({ title: `BUT ! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
     matchEnd: (h, a, hs, as_) => ({ title: `🏁 Match terminé`, body: `${h} ${hs} - ${as_} ${a}` }),
   },
   en: {
-    matchStart: (h, a) => ({ title: `⚽ Match started!`, body: `${h} vs ${a} has kicked off.` }),
-    goal: (scorer, h, a, hs, as_) => ({ title: `⚽ GOAL! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
+    matchStart: (h, a) => ({ title: `Match started!`, body: `${h} vs ${a} has kicked off.` }),
+    goal: (scorer, h, a, hs, as_) => ({ title: `GOAL! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
     matchEnd: (h, a, hs, as_) => ({ title: `🏁 Match finished`, body: `${h} ${hs} - ${as_} ${a}` }),
   },
   es: {
-    matchStart: (h, a) => ({ title: `⚽ ¡Comenzó el partido!`, body: `${h} vs ${a} ha comenzado.` }),
-    goal: (scorer, h, a, hs, as_) => ({ title: `⚽ ¡GOL! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
+    matchStart: (h, a) => ({ title: `¡Comenzó el partido!`, body: `${h} vs ${a} ha comenzado.` }),
+    goal: (scorer, h, a, hs, as_) => ({ title: `¡GOL! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
     matchEnd: (h, a, hs, as_) => ({ title: `🏁 Partido finalizado`, body: `${h} ${hs} - ${as_} ${a}` }),
   },
 };
-function notifText(lang, type, ...args) {
+// icon: pou matchStart/goal, mete icon spò a devan titr la. Pou matchEnd,
+// titr la deja gen 🏁 (drapo fini a se inivèsèl, li fè sans pou tout spò).
+function notifText(lang, type, icon, ...args) {
   const dict = NOTIF_TEXT[lang] || NOTIF_TEXT.ht;
-  return dict[type](...args);
+  const { title, body } = dict[type](...args);
+  const finalTitle = type === "matchEnd" ? title : `${icon} ${title}`;
+  return { title: finalTitle, body };
 }
 
 async function checkMatchesAndNotify(env) {
@@ -467,25 +486,27 @@ async function checkMatchesAndNotify(env) {
       const prevRaw = await env.MATCH_STATE.get(`match:${matchId}`);
       const prev = prevRaw ? JSON.parse(prevRaw) : null;
 
+      const sport = ev._sport || "Soccer";
+
       if (!prev) {
         if (status === "In Progress" || status === "1H") {
-          toNotify.push({ type: "matchStart", h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null });
+          toNotify.push({ type: "matchStart", sport, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null });
         }
       } else {
         if (homeScore > prev.homeScore) {
-          toNotify.push({ type: "goal", h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strHomeTeam });
+          toNotify.push({ type: "goal", sport, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strHomeTeam });
         }
         if (awayScore > prev.awayScore) {
-          toNotify.push({ type: "goal", h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strAwayTeam });
+          toNotify.push({ type: "goal", sport, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strAwayTeam });
         }
         if (prev.status !== "Match Finished" && status === "Match Finished") {
-          toNotify.push({ type: "matchEnd", h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null });
+          toNotify.push({ type: "matchEnd", sport, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null });
         }
       }
 
       await env.MATCH_STATE.put(
         `match:${matchId}`,
-        JSON.stringify({ homeScore, awayScore, status }),
+        JSON.stringify({ homeScore, awayScore, status, sport }),
         { expirationTtl: 60 * 60 * 6 }
       );
     }
@@ -497,18 +518,28 @@ async function checkMatchesAndNotify(env) {
     const tokens = await getFcmTokens(env, accessToken, projectId);
 
     for (const ev of toNotify) {
+      const icon = SPORT_ICON[ev.sport] || "⚽";
       for (const t of tokens) {
         try {
           const { title, body } =
             ev.type === "matchStart"
-              ? notifText(t.lang, "matchStart", ev.h, ev.a)
+              ? notifText(t.lang, "matchStart", icon, ev.h, ev.a)
               : ev.type === "matchEnd"
-              ? notifText(t.lang, "matchEnd", ev.h, ev.a, ev.hs, ev.as_)
-              : notifText(t.lang, "goal", ev.scorer, ev.h, ev.a, ev.hs, ev.as_);
+              ? notifText(t.lang, "matchEnd", icon, ev.h, ev.a, ev.hs, ev.as_)
+              : notifText(t.lang, "goal", icon, ev.scorer, ev.h, ev.a, ev.hs, ev.as_);
           await sendPush(accessToken, projectId, t.token, title, body);
           log.notifications++;
         } catch (e) {
           log.errors.push(e.message);
+          // 🧹 Si FCM di kle sa a pa valab ankò (aparèy dezenstale/deteni),
+          // retire l nan Firestore pou li sispann akimile e voye doublon.
+          if (e.invalidToken && t.docName) {
+            try {
+              await deleteFcmToken(accessToken, t.docName);
+            } catch (delErr) {
+              log.errors.push(`Pa kapab retire token mouri a: ${delErr.message}`);
+            }
+          }
         }
       }
     }
@@ -520,12 +551,25 @@ async function checkMatchesAndNotify(env) {
 }
 
 async function fetchLiveEvents(env) {
-  const res = await fetch("https://www.thesportsdb.com/api/v2/json/livescore/Soccer", {
-    headers: { "X-API-KEY": env.SPORTS_API_KEY_V2 },
-  });
-  if (!res.ok) throw new Error("Pa kapab jwenn match an tan reyèl (V2)");
-  const data = await res.json();
-  return data.livescore || data.events || [];
+  const results = await Promise.all(
+    LIVE_SPORTS.map(async (sport) => {
+      try {
+        const res = await fetch(
+          `https://www.thesportsdb.com/api/v2/json/livescore/${encodeURIComponent(sport)}`,
+          { headers: { "X-API-KEY": env.SPORTS_API_KEY_V2 } }
+        );
+        if (!res.ok) return [];
+        const data = await res.json();
+        const list = data.livescore || data.events || [];
+        return list.map((e) => ({ ...e, _sport: sport }));
+      } catch (ex) {
+        // Yon spò ki echwe pa dwe anpeche lòt spò yo mache.
+        console.log(`livescore V2 err (${sport}):`, ex.message);
+        return [];
+      }
+    })
+  );
+  return results.flat();
 }
 
 async function getGoogleAccessToken(env) {
@@ -597,12 +641,32 @@ async function getFcmTokens(env, accessToken, projectId) {
   );
   const data = await res.json();
   if (!data.documents) return [];
-  return data.documents
-    .map((doc) => ({
-      token: doc.fields?.token?.stringValue,
+  // 🧹 Dedup pa VALÈ token la (pa doc ID sèlman) — si de dokiman diferan
+  // ta gen menm valè token (kopi/erè done), nou voye yon sèl fwa.
+  const byToken = new Map();
+  data.documents.forEach((doc) => {
+    const raw = doc.fields?.token?.stringValue;
+    if (!raw) return;
+    const token = raw.trim();
+    if (!token) return;
+    byToken.set(token, {
+      token,
       lang: doc.fields?.lang?.stringValue || "ht",
-    }))
-    .filter((t) => Boolean(t.token));
+      docName: doc.name, // rezoud chemen konplè Firestore a — bezwen l pou ka retire token mouri
+    });
+  });
+  return [...byToken.values()];
+}
+
+// Retire yon dokiman fcmTokens ki gen yon token FCM ki pa valab ankò
+// (aparèy dezenstale, token ekspire, elatriye) — sa anpeche akimilasyon
+// tokens mouri ki ka lakòz doublon notifikasyon sou tan.
+async function deleteFcmToken(accessToken, docName) {
+  const res = await fetch(`https://firestore.googleapis.com/v1/${docName}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`Firestore delete ${res.status}`);
 }
 
 async function sendPush(accessToken, projectId, token, title, body) {
@@ -621,6 +685,17 @@ async function sendPush(accessToken, projectId, token, title, body) {
     // Si FCM reponn ak yon erè (kle envalid, move projet, token ekspire,
     // elatriye), nou dwe voye sa monte kòm erè — pa kite l pase an silans,
     // sinon log.notifications++ ap kontinye konte "siksè" ki pa t janm rive.
-    throw new Error(`FCM ${res.status} pou token ${token.slice(0, 12)}...: ${errText}`);
+    const err = new Error(`FCM ${res.status} pou token ${token.slice(0, 12)}...: ${errText}`);
+    // 🔎 Idantifye si se yon token ki mouri pou tout tan (aparèy dezenstale,
+    // app dezabòne, elatriye) — sa a se sèl ka kote nou ta dwe netwaye
+    // Firestore. Lòt erè (rezo, kota, kle envalid) rete jis erè tanporè.
+    try {
+      const parsed = JSON.parse(errText);
+      const detail = parsed?.error?.details?.find((d) => d.errorCode);
+      if (detail && (detail.errorCode === "UNREGISTERED" || detail.errorCode === "INVALID_ARGUMENT")) {
+        err.invalidToken = true;
+      }
+    } catch (_) {}
+    throw err;
   }
 }
