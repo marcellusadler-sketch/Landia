@@ -291,16 +291,24 @@ async function sportsEvents(request, env) {
       // ➕ Match ki AP JWE kounye a (dapre livescore V2) men ki pa parèt nan
       // rezilta eventsday.php a ditou (egzanp: dat/lig pa matche egzakteman) —
       // san sa a, match sa yo t ap voye notifikasyon gòl men pa janm parèt
-      // nan lis app la. Nou ajoute yo kanmenm.
+      // nan lis app la. Nou ajoute yo, MEN sèlman nan jou ki egzakteman
+      // koresponn ak vrè dat match la (`d`) — otreman, kòm sportsEvents()
+      // rele endepandaman pou CHAK nan 5 jou aparèy la mande, menm match
+      // live la ta ka "fantom-enjekte" plizyè fwa anba diferan etikèt dat
+      // (egzanp: parèt kòm "19 juil." pandan l ap jwe jodi a).
       liveMap.forEach((live, id) => {
         if (seen.has(id)) return;
+        // San nou pa ka konfime match live la se pou jou `d` k ap mande a
+        // (pa gen dateEvent, oswa li pa matche), nou pa enjekte l — pi
+        // vo li manke nan lis la yon fwa pase l parèt an doub sou 5 jou.
+        if (!live.dateEvent || live.dateEvent !== d) return;
         merged.push({
           idEvent: id,
           strHomeTeam: live.strHomeTeam || "?",
           strAwayTeam: live.strAwayTeam || "?",
           strLeague: live.strLeague || sport,
           strTime: live.strEventTime || live.strTime || null,
-          dateEvent: live.dateEvent || d,
+          dateEvent: live.dateEvent,
           strStatus: live.strStatus || "In Progress",
           intHomeScore: live.intHomeScore ?? null,
           intAwayScore: live.intAwayScore ?? null,
