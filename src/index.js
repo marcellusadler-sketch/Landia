@@ -450,6 +450,8 @@ const LIVE_SPORTS = ["Soccer", "Basketball", "American Football", "Baseball", "I
 
 // Icon ki reprezante chak spò — konsa notifikasyon an pa toujou parèt ak
 // yon boul foutbòl menm lè se yon match baskètbòl/foutbòl ameriken/elatriye.
+// Sèvi kòm DEFAULT/FALLBACK sèlman — si admin la konfigire yon modèl pèsonalize
+// nan config/notifTemplates (Firestore), modèl sa a genyen priyorite.
 const SPORT_ICON = {
   Soccer: "⚽",
   Basketball: "🏀",
@@ -462,6 +464,8 @@ const SPORT_ICON = {
 // la (ht/fr/en/es), anrejistre nan chan "lang" doc fcmTokens la. Titr yo pa
 // gen okenn icon "codé an dur" ankò — icon ki koresponn ak spò a mete devan
 // pa notifText() pi ba, dinamikman.
+// ⚠️ Sa a se sèl FALLBACK — li itilize sèlman lè admin la PA konfigire yon
+// modèl pèsonalize pou evènman/spò sa a nan panel Admin (config/notifTemplates).
 const NOTIF_TEXT = {
   ht: {
     matchStart: (h, a) => ({ title: `Match kòmanse!`, body: `${h} vs ${a} vin kòmanse.` }),
@@ -493,6 +497,63 @@ function notifText(lang, type, icon, ...args) {
   return { title: finalTitle, body };
 }
 
+// Mape kalite evènman entèn (matchStart/goal/matchEnd) ak kle modèl Admin la
+// itilize nan Firestore (kickoff/goal/finished).
+const EVENT_TYPE_TO_TEMPLATE_KEY = {
+  matchStart: "kickoff",
+  goal: "goal",
+  matchEnd: "finished",
+};
+
+// Ranpli {home}/{away}/{team}/{league}/{scoreHome}/{scoreAway} nan yon modèl
+// tèks admin la ekri, ak VRÈ done match la (menm non plasholdè yo itilize
+// nan panel Admin — index.html, fonksyon fillPlaceholders()).
+function fillTemplatePlaceholders(txt, data) {
+  return (txt || "")
+    .replaceAll("{home}", data.home ?? "")
+    .replaceAll("{away}", data.away ?? "")
+    .replaceAll("{team}", data.team ?? "")
+    .replaceAll("{league}", data.league ?? "")
+    .replaceAll("{scoreHome}", String(data.scoreHome ?? ""))
+    .replaceAll("{scoreAway}", String(data.scoreAway ?? ""));
+}
+
+// Bati kontni notifikasyon an (title/body/icon) pou yon evènman done —
+// priyorite: modèl pèsonalize admin la konfigire nan config/notifTemplates,
+// epi si pa gen youn (oswa li dezaktive), tonbe sou tradiksyon icon
+// "codé an dur" yo (NOTIF_TEXT/SPORT_ICON), jan l te fèt anvan.
+// Retounen `null` si evènman sa a dwe SKIPE (admin la dezaktive l esprè).
+function buildNotifContent(templates, sport, evType, lang, data) {
+  const templateKey = EVENT_TYPE_TO_TEMPLATE_KEY[evType];
+  const tplEvt = templates?.sports?.[sport]?.events?.[templateKey];
+
+  if (tplEvt) {
+    if (tplEvt.enabled === false) return null; // admin dezaktive evènman sa a nèt
+    const hasCustomText = (tplEvt.title && tplEvt.title.trim()) || (tplEvt.body && tplEvt.body.trim());
+    if (hasCustomText) {
+      const title = fillTemplatePlaceholders(tplEvt.title, data) || "Score Vision";
+      const body = fillTemplatePlaceholders(tplEvt.body, data);
+      const icon = (tplEvt.icon || "").trim() || null;
+      return { title, body, icon };
+    }
+    // Modèl la egziste men san tit/mesaj pèsonalize — itilize fallback la
+    // pou tèks la, men respekte icon PNG admin la mete si genyen.
+    const fallback = notifText(lang, evType, SPORT_ICON[sport] || "⚽", ...fallbackArgs(evType, data));
+    const icon = (tplEvt.icon || "").trim() || null;
+    return { ...fallback, icon };
+  }
+
+  // Pa gen okenn modèl konfigire pou spò/evènman sa a — konpòtman orijinal la.
+  const fallback = notifText(lang, evType, SPORT_ICON[sport] || "⚽", ...fallbackArgs(evType, data));
+  return { ...fallback, icon: null };
+}
+
+function fallbackArgs(evType, data) {
+  if (evType === "matchStart") return [data.home, data.away];
+  if (evType === "goal") return [data.team, data.home, data.away, data.scoreHome, data.scoreAway];
+  return [data.home, data.away, data.scoreHome, data.scoreAway]; // matchEnd
+}
+
 async function checkMatchesAndNotify(env) {
   const log = { checked: 0, notifications: 0, errors: [], statusesSeen: [] };
 
@@ -515,20 +576,21 @@ async function checkMatchesAndNotify(env) {
       const prev = prevRaw ? JSON.parse(prevRaw) : null;
 
       const sport = ev._sport || "Soccer";
+      const league = ev.strLeague || "";
 
       if (!prev) {
         if (status === "In Progress" || status === "1H") {
-          toNotify.push({ type: "matchStart", sport, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null });
+          toNotify.push({ type: "matchStart", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null });
         }
       } else {
         if (homeScore > prev.homeScore) {
-          toNotify.push({ type: "goal", sport, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strHomeTeam });
+          toNotify.push({ type: "goal", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strHomeTeam });
         }
         if (awayScore > prev.awayScore) {
-          toNotify.push({ type: "goal", sport, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strAwayTeam });
+          toNotify.push({ type: "goal", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strAwayTeam });
         }
         if (prev.status !== "Match Finished" && status === "Match Finished") {
-          toNotify.push({ type: "matchEnd", sport, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null });
+          toNotify.push({ type: "matchEnd", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null });
         }
       }
 
@@ -543,23 +605,35 @@ async function checkMatchesAndNotify(env) {
 
     const accessToken = await getGoogleAccessToken(env);
     const projectId = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT).project_id;
-    const tokens = await getFcmTokens(env, accessToken, projectId);
+
+    // 🔧 KOREKSYON: li konfigirasyon (tit/mesaj/PNG/enabled) admin la
+    // sovgade nan Firestore (config/notifTemplates) — san sa a, Worker la
+    // te toujou voye menm tèks/icon "codé an dur" yo, kèlkeswa sa admin
+    // te konfigire nan panel la.
+    const [tokens, templates] = await Promise.all([
+      getFcmTokens(env, accessToken, projectId),
+      getNotifTemplates(env, accessToken, projectId),
+    ]);
 
     for (const ev of toNotify) {
-      const icon = SPORT_ICON[ev.sport] || "⚽";
       // 🔔 Filtre: sèlman moun ki gen menm spò/chanpyona a chwazi nan app la
       // resevwa notifikasyon sa a (egzanp: moun ki sou Basketball pa resevwa
       // notif Foutbòl Ameriken, elatriye) — chak spò/chanpyona jere apa.
       const targetTokens = tokens.filter((t) => (t.sport || "Soccer") === ev.sport);
       for (const t of targetTokens) {
         try {
-          const { title, body } =
-            ev.type === "matchStart"
-              ? notifText(t.lang, "matchStart", icon, ev.h, ev.a)
-              : ev.type === "matchEnd"
-              ? notifText(t.lang, "matchEnd", icon, ev.h, ev.a, ev.hs, ev.as_)
-              : notifText(t.lang, "goal", icon, ev.scorer, ev.h, ev.a, ev.hs, ev.as_);
-          await sendPush(accessToken, projectId, t.token, title, body);
+          const data = {
+            home: ev.h,
+            away: ev.a,
+            team: ev.scorer || ev.h,
+            league: ev.league,
+            scoreHome: ev.hs,
+            scoreAway: ev.as_,
+          };
+          const content = buildNotifContent(templates, ev.sport, ev.type, t.lang, data);
+          if (!content) continue; // admin dezaktive evènman sa a pou spò sa a
+
+          await sendPush(accessToken, projectId, t.token, content.title, content.body, content.icon);
           log.notifications++;
         } catch (e) {
           log.errors.push(e.message);
@@ -691,6 +765,48 @@ async function getFcmTokens(env, accessToken, projectId) {
   return [...byToken.values()];
 }
 
+// 🆕 Li dokiman config/notifTemplates la (menm dokiman panel Admin lan ekri
+// ladan, ak SDK Firebase Web la) atravè REST API Firestore a, epi konvèti
+// fòma "tipe" REST la (stringValue/mapValue/booleanValue/elatriye) an yon
+// senp objè JavaScript nòmal pou nou ka li l fasil.
+async function getNotifTemplates(env, accessToken, projectId) {
+  try {
+    const res = await fetch(
+      `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/config/notifTemplates`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (res.status === 404) return null; // admin la poko konfigire anyen — nòmal
+    if (!res.ok) throw new Error(`Firestore config/notifTemplates HTTP ${res.status}`);
+    const doc = await res.json();
+    if (!doc.fields) return null;
+    return fsFieldsToObj(doc.fields);
+  } catch (ex) {
+    console.log("getNotifTemplates err:", ex.message);
+    return null; // si li echwe, nou tonbe sou fallback "codé an dur" a — pa kase notifikasyon yo
+  }
+}
+
+// Konvèti yon sèl valè Firestore REST (fòma { stringValue }, { mapValue }, elatriye)
+// an yon valè JavaScript senp (string/number/boolean/null/objè/tablo).
+function fsValueToJs(value) {
+  if (value == null) return null;
+  if ("stringValue" in value) return value.stringValue;
+  if ("booleanValue" in value) return value.booleanValue;
+  if ("integerValue" in value) return parseInt(value.integerValue, 10);
+  if ("doubleValue" in value) return value.doubleValue;
+  if ("nullValue" in value) return null;
+  if ("timestampValue" in value) return value.timestampValue;
+  if ("mapValue" in value) return fsFieldsToObj(value.mapValue.fields || {});
+  if ("arrayValue" in value) return (value.arrayValue.values || []).map(fsValueToJs);
+  return null;
+}
+// Konvèti yon objè "fields" Firestore REST konplè an yon objè JS nòmal.
+function fsFieldsToObj(fields) {
+  const out = {};
+  for (const key in fields) out[key] = fsValueToJs(fields[key]);
+  return out;
+}
+
 // Retire yon dokiman fcmTokens ki gen yon token FCM ki pa valab ankò
 // (aparèy dezenstale, token ekspire, elatriye) — sa anpeche akimilasyon
 // tokens mouri ki ka lakòz doublon notifikasyon sou tan.
@@ -702,16 +818,38 @@ async function deleteFcmToken(accessToken, docName) {
   if (!res.ok) throw new Error(`Firestore delete ${res.status}`);
 }
 
-async function sendPush(accessToken, projectId, token, title, body) {
+// ⚠️ IMAJ/ICON PÈSONALIZE: FCM (Android "big picture" ak Web Push icon)
+// mande yon URL https:// piblik li ka telechaje — yon "data:image/..;base64,.."
+// (foto ki telechaje dirèkteman soti nan Galri epi ki anrejistre tèl quèl nan
+// Firestore) PA ka mache isit la, paske sèvè Google/FCM pa ka "telechaje" yon
+// data URI konsa. Si w vle PNG/foto pèsonalize a reyèlman parèt nan
+// notifikasyon OS reyèl la (pa sèlman nan APÈSI admin lan), icon/imaj la
+// dwe ekri kòm yon lyen https:// ki eksiste deja sou entènèt (egzanp: yon
+// imaj ou telechaje sou Firebase Storage, Imgur, oswa sou pwòp sit ou a) —
+// se sèlman nan ka sa a nou anvwaye l bay FCM anba a.
+function isHttpImageUrl(url) {
+  return typeof url === "string" && /^https?:\/\//i.test(url);
+}
+
+async function sendPush(accessToken, projectId, token, title, body, icon) {
+  const message = { token, notification: { title, body } };
+
+  if (isHttpImageUrl(icon)) {
+    // Big picture / imaj rich pou Android
+    message.notification.image = icon;
+    // Icon pou Web Push (navigatè/PWA)
+    message.webpush = {
+      notification: { icon, image: icon },
+    };
+  }
+
   const res = await fetch(`https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${accessToken}`,
     },
-    body: JSON.stringify({
-      message: { token, notification: { title, body } },
-    }),
+    body: JSON.stringify({ message }),
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
