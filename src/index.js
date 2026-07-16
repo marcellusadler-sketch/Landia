@@ -59,6 +59,12 @@ export default {
       if (path === "/run" && request.method === "GET")
         return json(await checkMatchesAndNotify(env));
 
+      // 🆕 Teste manyèlman voye notifikasyon ki nan liy datant (pushQueue) —
+      // itil pou verifye yon "Notifikasyon Manyèl" ou fèk voye nan Admin lan
+      // san w pa gen pou tann pwochen sik cron (chak 2 minit) la.
+      if (path === "/run-queue" && request.method === "GET")
+        return json(await processPushQueue(env));
+
       if (path === "/" ) return json({ ok: true, service: "football-ia-worker" });
 
       return json({ error: "Wout la pa egziste" }, 404);
@@ -72,8 +78,13 @@ export default {
   // San SPORTS_API_KEY_V2 ak FIREBASE_SERVICE_ACCOUNT mete kòm Secrets,
   // li senpleman pa fè anyen (san erè, san danje).
   async scheduled(event, env, ctx) {
-    if (!env.SPORTS_API_KEY_V2 || !env.FIREBASE_SERVICE_ACCOUNT) return;
-    ctx.waitUntil(checkMatchesAndNotify(env));
+    if (!env.FIREBASE_SERVICE_ACCOUNT) return;
+    // Detèksyon gòl/match otomatik bezwen SPORTS_API_KEY_V2 an plis.
+    if (env.SPORTS_API_KEY_V2) ctx.waitUntil(checkMatchesAndNotify(env));
+    // 🆕 Notifikasyon Manyèl (pushQueue) sèlman bezwen FIREBASE_SERVICE_ACCOUNT —
+    // li dwe kouri menm si V2 pa konfigire, sinon bouton "Voye Kounye a" nan
+    // Admin lan pa janm fè anyen.
+    ctx.waitUntil(processPushQueue(env));
   },
 };
 
@@ -807,6 +818,105 @@ function fsFieldsToObj(fields) {
   return out;
 }
 
+// 🆕 Li tout dokiman ki nan koleksyon Firestore `pushQueue` ak status:'pending'
+// (kreye pa bouton "📣 Voye Notifikasyon Manyèl" nan panel Admin lan).
+async function getPendingPushQueue(env, accessToken, projectId) {
+  const res = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/pushQueue`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error(`Firestore pushQueue HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data.documents) return [];
+  return data.documents
+    .map((doc) => ({ ...fsFieldsToObj(doc.fields || {}), docName: doc.name }))
+    .filter((d) => (d.status || "pending") === "pending");
+}
+
+// Make yon dokiman pushQueue kòm trete (sent/error), pou li pa voye an doub
+// nan pwochen sik cron (chak 2 minit) la.
+async function markPushQueueDone(accessToken, docName, status, sentCount, errorMsg) {
+  const fields = {
+    status: { stringValue: status },
+    sentCount: { integerValue: String(sentCount || 0) },
+    processedAt: { timestampValue: new Date().toISOString() },
+  };
+  if (errorMsg) fields.error = { stringValue: String(errorMsg).slice(0, 500) };
+  const masks = Object.keys(fields)
+    .map((f) => `updateMask.fieldPaths=${encodeURIComponent(f)}`)
+    .join("&");
+  const res = await fetch(`https://firestore.googleapis.com/v1/${docName}?${masks}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ fields }),
+  });
+  if (!res.ok) throw new Error(`Firestore pushQueue update HTTP ${res.status}`);
+}
+
+// 🆕 Trete "Notifikasyon Manyèl" yo: li chak dokiman 'pending' nan pushQueue,
+// jwenn bon sib la (tout moun, oswa sèlman yon spò espesifik), voye push la
+// bay FCM, epi make dokiman an kòm trete pou l pa voye an doub.
+async function processPushQueue(env) {
+  const log = { queued: 0, sent: 0, errors: [] };
+  if (!env.FIREBASE_SERVICE_ACCOUNT) return log;
+
+  try {
+    const accessToken = await getGoogleAccessToken(env);
+    const projectId = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT).project_id;
+
+    const pending = await getPendingPushQueue(env, accessToken, projectId);
+    log.queued = pending.length;
+    if (pending.length === 0) return log;
+
+    const tokens = await getFcmTokens(env, accessToken, projectId);
+
+    for (const q of pending) {
+      try {
+        if (!q.title || !q.body) {
+          await markPushQueueDone(accessToken, q.docName, "error", 0, "tit oswa mesaj vid");
+          continue;
+        }
+        const targetTokens =
+          q.target && q.target !== "all"
+            ? tokens.filter((t) => (t.sport || "Soccer") === q.target)
+            : tokens;
+
+        let sentCount = 0;
+        const errs = [];
+        for (const t of targetTokens) {
+          try {
+            await sendPush(accessToken, projectId, t.token, q.title, q.body, q.icon, q.image);
+            sentCount++;
+          } catch (e) {
+            errs.push(e.message);
+            if (e.invalidToken && t.docName) {
+              try {
+                await deleteFcmToken(accessToken, t.docName);
+              } catch (_) {}
+            }
+          }
+        }
+        log.sent += sentCount;
+        if (errs.length) log.errors.push(...errs);
+        await markPushQueueDone(accessToken, q.docName, "sent", sentCount, errs[0]);
+      } catch (e) {
+        log.errors.push(e.message);
+        try {
+          await markPushQueueDone(accessToken, q.docName, "error", 0, e.message);
+        } catch (_) {}
+      }
+    }
+  } catch (e) {
+    log.errors.push(e.message);
+  }
+
+  return log;
+}
+
 // Retire yon dokiman fcmTokens ki gen yon token FCM ki pa valab ankò
 // (aparèy dezenstale, token ekspire, elatriye) — sa anpeche akimilasyon
 // tokens mouri ki ka lakòz doublon notifikasyon sou tan.
@@ -831,16 +941,21 @@ function isHttpImageUrl(url) {
   return typeof url === "string" && /^https?:\/\//i.test(url);
 }
 
-async function sendPush(accessToken, projectId, token, title, body, icon) {
+async function sendPush(accessToken, projectId, token, title, body, icon, bigImage) {
   const message = { token, notification: { title, body } };
 
-  if (isHttpImageUrl(icon)) {
-    // Big picture / imaj rich pou Android
-    message.notification.image = icon;
-    // Icon pou Web Push (navigatè/PWA)
-    message.webpush = {
-      notification: { icon, image: icon },
-    };
+  // Big picture / imaj rich — sèlman si se yon lyen https:// piblik, paske
+  // sèvè Google/FCM dwe telechaje l pou Android/iOS (data:base64 pa mache).
+  const image = isHttpImageUrl(bigImage) ? bigImage : (isHttpImageUrl(icon) ? icon : null);
+  if (image) message.notification.image = image;
+
+  // Icon/imaj Web Push (navigatè/PWA) — kontrèman ak `notification.image`
+  // anwo a, sa a rezoud kote NAVIGATÈ moun nan ye, kidonk yon chemen
+  // relatif tankou "/icon-192.png" mache tou (li pa oblije yon URL absoli).
+  if (icon || image) {
+    message.webpush = { notification: {} };
+    if (icon) message.webpush.notification.icon = icon;
+    if (image) message.webpush.notification.image = image;
   }
 
   const res = await fetch(`https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`, {
