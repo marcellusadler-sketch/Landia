@@ -289,32 +289,33 @@ async function sportsEvents(request, env) {
         }
       });
       // ➕ Match ki AP JWE kounye a (dapre livescore V2) men ki pa parèt nan
-      // rezilta eventsday.php a ditou (egzanp: dat/lig pa matche egzakteman) —
-      // san sa a, match sa yo t ap voye notifikasyon gòl men pa janm parèt
-      // nan lis app la. Nou ajoute yo, MEN sèlman nan jou ki egzakteman
-      // koresponn ak vrè dat match la (`d`) — otreman, kòm sportsEvents()
-      // rele endepandaman pou CHAK nan 5 jou aparèy la mande, menm match
-      // live la ta ka "fantom-enjekte" plizyè fwa anba diferan etikèt dat
-      // (egzanp: parèt kòm "19 juil." pandan l ap jwe jodi a).
-      liveMap.forEach((live, id) => {
-        if (seen.has(id)) return;
-        // San nou pa ka konfime match live la se pou jou `d` k ap mande a
-        // (pa gen dateEvent, oswa li pa matche), nou pa enjekte l — pi
-        // vo li manke nan lis la yon fwa pase l parèt an doub sou 5 jou.
-        if (!live.dateEvent || live.dateEvent !== d) return;
-        merged.push({
-          idEvent: id,
-          strHomeTeam: live.strHomeTeam || "?",
-          strAwayTeam: live.strAwayTeam || "?",
-          strLeague: live.strLeague || sport,
-          strTime: live.strEventTime || live.strTime || null,
-          dateEvent: live.dateEvent,
-          strStatus: live.strStatus || "In Progress",
-          intHomeScore: live.intHomeScore ?? null,
-          intAwayScore: live.intAwayScore ?? null,
+      // rezilta eventsday.php a ditou (egzanp: dat/lig pa matche egzakteman,
+      // oswa metadata `dateEvent` API a bay la fo/an reta) — san sa a, match
+      // sa yo t ap voye notifikasyon gòl men pa janm parèt nan lis app la,
+      // menm si moun nan ap gade menm spò a. Yon match ki VRÈMAN ap jwe se pou
+      // JODI A pa definisyon, kèlkeswa sa `dateEvent` di — kidonk nou enjekte
+      // l san kondisyon sou `d` la egal jou aktyèl (UTC) sèvè a, san nou pa
+      // fè konfyans a `dateEvent` la ditou. Nou fè sa SÈLMAN pou rekèt "jodi
+      // a" (yon sèl nan 5 rekèt aparèy la fè yo), pou l pa "fantom-enjekte"
+      // an doub sou plizyè jou.
+      const todayUTC = new Date().toISOString().split("T")[0];
+      if (d === todayUTC) {
+        liveMap.forEach((live, id) => {
+          if (seen.has(id)) return;
+          merged.push({
+            idEvent: id,
+            strHomeTeam: live.strHomeTeam || "?",
+            strAwayTeam: live.strAwayTeam || "?",
+            strLeague: live.strLeague || sport,
+            strTime: live.strEventTime || live.strTime || null,
+            dateEvent: todayUTC, // 🔒 fòse jodi a — pa fè konfyans a dateEvent V2 la ki ka fo/an reta
+            strStatus: live.strStatus || "In Progress",
+            intHomeScore: live.intHomeScore ?? null,
+            intAwayScore: live.intAwayScore ?? null,
+          });
+          seen.add(id);
         });
-        seen.add(id);
-      });
+      }
     } catch (ex) {
       // Si V2 echwe pou nenpòt rezon (kota, rezo, elatriye), nou senpleman
       // kontinye ak done V1 yo — pa kite tout wout la tonbe pou sa.
@@ -546,7 +547,11 @@ async function checkMatchesAndNotify(env) {
 
     for (const ev of toNotify) {
       const icon = SPORT_ICON[ev.sport] || "⚽";
-      for (const t of tokens) {
+      // 🔔 Filtre: sèlman moun ki gen menm spò/chanpyona a chwazi nan app la
+      // resevwa notifikasyon sa a (egzanp: moun ki sou Basketball pa resevwa
+      // notif Foutbòl Ameriken, elatriye) — chak spò/chanpyona jere apa.
+      const targetTokens = tokens.filter((t) => (t.sport || "Soccer") === ev.sport);
+      for (const t of targetTokens) {
         try {
           const { title, body } =
             ev.type === "matchStart"
@@ -679,6 +684,7 @@ async function getFcmTokens(env, accessToken, projectId) {
     byToken.set(token, {
       token,
       lang: doc.fields?.lang?.stringValue || "ht",
+      sport: doc.fields?.sport?.stringValue || "Soccer", // 🔔 spò/chanpyona moun nan chwazi nan app la
       docName: doc.name, // rezoud chemen konplè Firestore a — bezwen l pou ka retire token mouri
     });
   });
