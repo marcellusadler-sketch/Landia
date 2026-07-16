@@ -272,7 +272,45 @@ async function sportsEvents(request, env) {
   addAll(mainData?.events);
   extraResults.forEach((r) => addAll(r?.events));
 
+  // 🔴 KWAZE AK LIVESCORE V2 (menm sous ke notifikasyon yo itilize) —
+  // eventsday.php (V1) souvan pa mete strStatus/eskò ajou pandan match
+  // la ap jwe. Nou ranplase estati/eskò a ak done V2 an tan reyèl la,
+  // lè match la aktyèlman nan lis live la, san nou pa touche match ki
+  // poko kòmanse oswa ki fini deja (yo pa parèt nan livescore ankò).
+  if (env.SPORTS_API_KEY_V2) {
+    try {
+      const liveMap = await fetchLiveMap(env, sport);
+      merged.forEach((e) => {
+        const live = liveMap.get(String(e.idEvent));
+        if (live) {
+          e.strStatus = live.strStatus ?? e.strStatus;
+          e.intHomeScore = live.intHomeScore ?? e.intHomeScore;
+          e.intAwayScore = live.intAwayScore ?? e.intAwayScore;
+        }
+      });
+    } catch (ex) {
+      // Si V2 echwe pou nenpòt rezon (kota, rezo, elatriye), nou senpleman
+      // kontinye ak done V1 yo — pa kite tout wout la tonbe pou sa.
+      console.log("livescore V2 merge err:", ex.message);
+    }
+  }
+
   return json({ events: merged }, mainRes.status);
+}
+
+// Jwenn map (idEvent -> done live) pou yon spò bay, soti nan menm API V2
+// livescore ke sistèm notifikasyon an (checkMatchesAndNotify) itilize.
+async function fetchLiveMap(env, sport) {
+  const res = await fetch(
+    `https://www.thesportsdb.com/api/v2/json/livescore/${encodeURIComponent(sport)}`,
+    { headers: { "X-API-KEY": env.SPORTS_API_KEY_V2 } }
+  );
+  if (!res.ok) throw new Error(`livescore V2 HTTP ${res.status}`);
+  const data = await res.json();
+  const list = data.livescore || data.events || [];
+  const map = new Map();
+  list.forEach((e) => map.set(String(e.idEvent), e));
+  return map;
 }
 
 // Estatistik REYÈL yon match espesifik (pou match k ap jwe oswa ki fini) —
