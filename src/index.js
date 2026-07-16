@@ -288,6 +288,25 @@ async function sportsEvents(request, env) {
           e.intAwayScore = live.intAwayScore ?? e.intAwayScore;
         }
       });
+      // ➕ Match ki AP JWE kounye a (dapre livescore V2) men ki pa parèt nan
+      // rezilta eventsday.php a ditou (egzanp: dat/lig pa matche egzakteman) —
+      // san sa a, match sa yo t ap voye notifikasyon gòl men pa janm parèt
+      // nan lis app la. Nou ajoute yo kanmenm.
+      liveMap.forEach((live, id) => {
+        if (seen.has(id)) return;
+        merged.push({
+          idEvent: id,
+          strHomeTeam: live.strHomeTeam || "?",
+          strAwayTeam: live.strAwayTeam || "?",
+          strLeague: live.strLeague || sport,
+          strTime: live.strEventTime || live.strTime || null,
+          dateEvent: live.dateEvent || d,
+          strStatus: live.strStatus || "In Progress",
+          intHomeScore: live.intHomeScore ?? null,
+          intAwayScore: live.intAwayScore ?? null,
+        });
+        seen.add(id);
+      });
     } catch (ex) {
       // Si V2 echwe pou nenpòt rezon (kota, rezo, elatriye), nou senpleman
       // kontinye ak done V1 yo — pa kite tout wout la tonbe pou sa.
