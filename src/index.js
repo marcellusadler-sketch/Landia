@@ -297,6 +297,12 @@ async function sportsEvents(request, env) {
           e.strStatus = live.strStatus ?? e.strStatus;
           e.intHomeScore = live.intHomeScore ?? e.intHomeScore;
           e.intAwayScore = live.intAwayScore ?? e.intAwayScore;
+          // 🆕 VRÈ MINIT MATCH LA: livescore V2 bay yon chan "strProgress" (egzanp
+          // "63", "45+2", "HT"...) ki reprezante MOMAN REYÈL match la — anvan, nou
+          // te jete valè sa a nèt, kidonk app la pa t janm gen okenn chwa pase
+          // ESTIME minit la apati lè kickoff la. Kounye a nou transmèt li san
+          // chanje l bay index.html, ki kounye a konnen kijan pou l li/afiche l.
+          e.strProgress = live.strProgress ?? e.strProgress;
         }
       });
       // ➕ Match ki AP JWE kounye a (dapre livescore V2) men ki pa parèt nan
@@ -323,6 +329,13 @@ async function sportsEvents(request, env) {
             strStatus: live.strStatus || "In Progress",
             intHomeScore: live.intHomeScore ?? null,
             intAwayScore: live.intAwayScore ?? null,
+            // 🆕 Menm rezon ak pi wo a: match sa yo pa gen okenn done V1 (yo pa t
+            // parèt nan eventsday.php), kidonk `strProgress`/`strVenue`/`strCountry`
+            // V2 la se SÈL sous nou genyen pou yo — nou pran yo si yo disponib.
+            strProgress: live.strProgress ?? null,
+            strVenue: live.strVenue ?? null,
+            strCountry: live.strCountry ?? null,
+            strRound: live.strRound ?? null,
           });
           seen.add(id);
         });
