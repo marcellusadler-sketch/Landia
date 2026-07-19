@@ -11,8 +11,12 @@
  *     YON SÈL FWA pa match pa sik (anvan, li te ka evantyèlman itil pou
  *     plizyè bagay san rejwenn), epi itilize pou detekte GÒL, KATON, AK
  *     CHANJMAN ansanm — mwens apèl API, mwens chans pou erè kota.
- *  3. Rès kòd la (Moncash, Natcash, AI, pushQueue, elatriye) rete
- *     EGZAKTEMAN menm jan ak orijinal la — pa gen okenn chanjman.
+ *  3. 🆕 FIX CHANJMAN (substitution): notifikasyon an kounye a montre
+ *     TOULE 2 jwè yo — jwè ki ANTRE a (`strPlayer`) AK jwè ki SOTI a
+ *     (`strAssist`, chan TheSportsDB itilize pou sa). Anvan, sèl jwè
+ *     ki antre a te parèt.
+ *  4. Rès kòd la (Moncash, Natcash, AI, pushQueue, elatriye) rete
+ *     EGZAKTEMAN menm jan ak orijinal la — pa gen okenn lòt chanjman.
  *
  * Tout kle sekrè (Moncash, Natcash, Claude, Groq, Perplexity) rete
  * ISIT LA SÈLMAN, kòm "Secrets" nan Cloudflare. Telefòn moun yo
@@ -446,7 +450,7 @@ const LIVE_SPORTS = ["Soccer", "Basketball", "American Football", "Baseball", "I
 // Spò kote nou ka jwenn detay "Katon" ak "Chanjman" fyab nan TheSportsDB
 const SPORTS_WITH_CARDS = ["Soccer"];
 const SPORTS_WITH_SUBS = ["Soccer"];
-// 🆕 Spò kote nou ka jwenn NON JWÈ ki fè gòl la (timeline "Goal") — pou
+// Spò kote nou ka jwenn NON JWÈ ki fè gòl la (timeline "Goal") — pou
 // lòt spò yo (Basketball, Baseball, elatriye) nou kontinye voye notifikasyon
 // eskò a san non jwè a, paske TheSportsDB pa bay detay sa a fyab pou yo.
 const SPORTS_WITH_GOALS = ["Soccer"];
@@ -479,8 +483,12 @@ const SUB_LABEL = {
   ht: "Chanjman", fr: "Changement", en: "Substitution", es: "Cambio",
 };
 
-// 🆕 Kounye a "goal" enkli non jwè a (data.player) ANPLIS non ekip la
-// (data.scorer), lè done a disponib — egzanp: "34' But : 1 - 0  J. Duval (Violette AC)"
+// 🆕 "goal" enkli non jwè a (data.player) ANPLIS non ekip la (data.scorer),
+// lè done a disponib — egzanp: "34' But : 1 - 0  J. Duval (Violette AC)"
+//
+// 🆕 FIX "substitution" kounye a montre TOULE 2 jwè yo: jwè ki ANTRE a
+// (data.playerIn) AK jwè ki SOTI a (data.playerOut) — egzanp:
+// "67' Chanjman : J. Duval ⇄ M. Pierre (Violette AC)"
 function buildAutoNotif(sport, evType, lang, data) {
   const L = lang && MATCH_START_TEXT[lang] ? lang : "ht";
   const title = `${data.home} - ${data.away}`;
@@ -491,17 +499,20 @@ function buildAutoNotif(sport, evType, lang, data) {
     body = MATCH_START_TEXT[L];
   } else if (evType === "goal") {
     const scoreWord = (SCORE_LABEL[sport] && SCORE_LABEL[sport][L]) || SCORE_LABEL.Soccer[L];
-    // 🆕 si nou gen non jwè a (data.player), montre "Jwè (Ekip)";
-    // si nou pa gen li (pa t gen tan parèt nan timeline TheSportsDB
-    // ankò, oswa spò a pa nan SPORTS_WITH_GOALS), retounen sou
-    // ansyen konpòtman an: sèlman non ekip la.
+    // si nou gen non jwè a (data.player), montre "Jwè (Ekip)";
+    // si nou pa gen li, retounen sou ansyen konpòtman an: sèlman non ekip la.
     const scorerText = data.player ? `${data.player} (${data.scorer})` : data.scorer;
     body = `${minute}${scoreWord} : ${data.scoreHome} - ${data.scoreAway}${scorerText ? "  " + scorerText : ""}`;
   } else if (evType === "card") {
     const cardWord = CARD_LABEL[data.cardColor === "red" ? "red" : "yellow"][L];
     body = `${minute}${cardWord} : ${data.player || "?"}${data.team ? " (" + data.team + ")" : ""}`;
   } else if (evType === "substitution") {
-    body = `${minute}${SUB_LABEL[L]} : ${data.player || "?"}${data.team ? " (" + data.team + ")" : ""}`;
+    // 🆕 montre jwè ki antre a AK jwè ki soti a, lè toude disponib.
+    // Si nou pa gen youn nan yo (done TheSportsDB enkonplè pou match sa a),
+    // nou montre sa nou genyen an sèlman — jamè nou kraze sou yon "?" vid.
+    const inP = data.playerIn || "?";
+    const outText = data.playerOut ? ` ⇄ ${data.playerOut}` : "";
+    body = `${minute}${SUB_LABEL[L]} : ${inP}${outText}${data.team ? " (" + data.team + ")" : ""}`;
   } else if (evType === "matchEnd") {
     body = `${MATCH_END_TEXT[L]} : ${data.scoreHome} - ${data.scoreAway}`;
   } else {
@@ -536,7 +547,7 @@ async function checkMatchesAndNotify(env) {
 
       let seenTimeline = prev?.seenTimeline || [];
 
-      // 🆕 Nou chèche timeline la YON SÈL FWA pa match pa sik (anvan gòl,
+      // Nou chèche timeline la YON SÈL FWA pa match pa sik (anvan gòl,
       // katon, ak chanjman te ka mande jiska 2 apèl separe san rezon).
       const isLive = status === "In Progress" || status === "1H" || status === "2H" || status === "HT";
       const needsTimeline =
@@ -552,7 +563,7 @@ async function checkMatchesAndNotify(env) {
         }
       }
 
-      // 🆕 Jwenn non premye jwè "Goal" nan timeline a pou yon ekip bay,
+      // Jwenn non premye jwè "Goal" nan timeline a pou yon ekip bay,
       // ki poko make kòm "seenTimeline" — epi make l tousuit pou nou
       // pa itilize l ankò pou yon lòt gòl.
       const findGoalScorer = (teamName) => {
@@ -607,7 +618,14 @@ async function checkMatchesAndNotify(env) {
           } else if (SPORTS_WITH_CARDS.includes(sport) && t.strTimeline === "Red Card") {
             toNotify.push({ type: "card", cardColor: "red", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, player, team, minute: tMinute });
           } else if (SPORTS_WITH_SUBS.includes(sport) && t.strTimeline === "Substitution") {
-            toNotify.push({ type: "substitution", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, player, team, minute: tMinute });
+            // 🆕 FIX: `strPlayer` se jwè ki ANTRE a, `strAssist` se jwè ki SOTI a.
+            // Anvan, sèl `strPlayer` (antre a) te itilize — jwè ki soti a pa t janm parèt.
+            toNotify.push({
+              type: "substitution", sport, league,
+              h: ev.strHomeTeam, a: ev.strAwayTeam,
+              playerIn: t.strPlayer || "", playerOut: t.strAssist || "",
+              team, minute: tMinute
+            });
           } else {
             continue; // "Goal" ak lòt kalite deja jere pa findGoalScorer() pi wo a
           }
@@ -638,7 +656,9 @@ async function checkMatchesAndNotify(env) {
             scoreHome: ev.hs,
             scoreAway: ev.as_,
             scorer: ev.scorer,
-            player: ev.player, // 🆕 non jwè a — itilize pou gòl, katon, ak chanjman
+            player: ev.player, // non jwè a — itilize pou gòl
+            playerIn: ev.playerIn, // 🆕 jwè ki antre a — chanjman
+            playerOut: ev.playerOut, // 🆕 jwè ki soti a — chanjman
             team: ev.team,
             cardColor: ev.cardColor,
             minute: ev.minute,
