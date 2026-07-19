@@ -15,7 +15,15 @@
  *     TOULE 2 jwè yo — jwè ki ANTRE a (`strPlayer`) AK jwè ki SOTI a
  *     (`strAssist`, chan TheSportsDB itilize pou sa). Anvan, sèl jwè
  *     ki antre a te parèt.
- *  4. Rès kòd la (Moncash, Natcash, AI, pushQueue, elatriye) rete
+ *  4. 🆕 AJOUTE: wout "/notify/admin-push" — voye yon push FCM bay
+ *     TELEFÒN ADMIN yo (koleksyon Firestore `adminPushTokens`, ranpli
+ *     lè admin klike "Aktive Notif Menm Si Aplikasyon Fèmen" nan
+ *     Admin.html) chak fwa gen yon nouvo mesaj kontak, demann Premium,
+ *     oswa demann reset modpas nan index.html. Sèvi ak MENM Kont Sèvis
+ *     Firebase (FIREBASE_SERVICE_ACCOUNT) ak menm fonksyon sendPush()
+ *     ki deja egziste pou notifikasyon match yo — pa gen okenn nouvo
+ *     sekrè pou ajoute.
+ *  5. Rès kòd la (Moncash, Natcash, AI, pushQueue, elatriye) rete
  *     EGZAKTEMAN menm jan ak orijinal la — pa gen okenn lòt chanjman.
  *
  * Tout kle sekrè (Moncash, Natcash, Claude, Groq, Perplexity) rete
@@ -79,6 +87,10 @@ export default {
         return await aiPerplexity(request, env);
       if (path === "/ai/gemini" && request.method === "POST")
         return await aiGemini(request, env);
+
+      // 🆕 Voye push FCM bay telefòn ADMIN yo (menm si Admin.html fèmen)
+      if (path === "/notify/admin-push" && request.method === "POST")
+        return await notifyAdminPush(request, env);
 
       // Teste manyèlman detèksyon gòl/notifikasyon (menm kòd ki kouri chak 2 minit)
       if (path === "/run" && request.method === "GET")
@@ -801,6 +813,75 @@ async function getFcmTokens(env, accessToken, projectId) {
   return [...byToken.values()];
 }
 
+/* ══════════════════ NOTIFIKASYON ADMIN (push menm si Admin.html fèmen) ══════════════════ */
+// Koute pa Firestore triggers — se index.html ki rele wout sa a DIRÈKTEMAN
+// (fetch fire-and-forget) chak fwa gen yon nouvo mesaj kontak, demann
+// Premium, oswa demann reset modpas. Sèvi ak MENM Kont Sèvis
+// (FIREBASE_SERVICE_ACCOUNT) ak MENM fonksyon sendPush()/getGoogleAccessToken()
+// ki deja egziste pou notifikasyon match yo pi wo a.
+
+async function getAdminPushTokens(env, accessToken, projectId) {
+  // Nan Admin.html, chak dokiman nan "adminPushTokens" gen TOKEN lan
+  // kòm ID dokiman an (db.collection('adminPushTokens').doc(token).set(...)),
+  // pa kòm yon chan — se poutèt sa nou pran non dokiman an.
+  const res = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/adminPushTokens`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error(`Firestore adminPushTokens HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data.documents) return [];
+  return data.documents.map((doc) => ({
+    token: doc.name.split("/").pop(),
+    docName: doc.name,
+  }));
+}
+
+async function notifyAdminPush(request, env) {
+  if (!env.FIREBASE_SERVICE_ACCOUNT) {
+    return json({ error: "FIREBASE_SERVICE_ACCOUNT pa konfigire sou Worker la" }, 500);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch (e) {
+    return json({ error: "JSON envalid" }, 400);
+  }
+  const { title, body: msgBody, target } = body || {};
+  if (!title || !msgBody) return json({ error: "title ak body obligatwa" }, 400);
+
+  try {
+    const accessToken = await getGoogleAccessToken(env);
+    const projectId = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT).project_id;
+    const tokens = await getAdminPushTokens(env, accessToken, projectId);
+
+    if (tokens.length === 0) {
+      return json({ ok: true, sent: 0, note: "Pa gen telefòn admin anrejistre (adminPushTokens vid)" });
+    }
+
+    let sent = 0;
+    const errors = [];
+    for (const t of tokens) {
+      try {
+        await sendPush(accessToken, projectId, t.token, title, msgBody, SCORE_VISION_LOGO_URL, null, target ? { target } : null);
+        sent++;
+      } catch (e) {
+        errors.push(e.message);
+        if (e.invalidToken) {
+          try {
+            await deleteFcmToken(accessToken, t.docName);
+          } catch (_) {}
+        }
+      }
+    }
+    return json({ ok: true, sent, total: tokens.length, errors: errors.slice(0, 3) });
+  } catch (e) {
+    return json({ error: e.message || "Erè sèvè" }, 500);
+  }
+}
+
 /* ══════════════════ NOTIFIKASYON MANYÈL (pushQueue) ══════════════════ */
 
 async function getPendingPushQueue(env, accessToken, projectId) {
@@ -927,8 +1008,16 @@ function isHttpImageUrl(url) {
   return typeof url === "string" && /^https?:\/\//i.test(url);
 }
 
-async function sendPush(accessToken, projectId, token, title, body, icon, bigImage) {
+async function sendPush(accessToken, projectId, token, title, body, icon, bigImage, data) {
   const message = { token, notification: { title, body } };
+
+  // 🆕 "data" opsyonèl (egzanp: {target:'card-messages'}) — itilize pou
+  // Admin.html/Service Worker la ka konnen ki kat pou l louvri lè moun
+  // klike sou notifikasyon an. Tout ansyen apèl sendPush() kontinye
+  // mache menm jan paske paramèt sa a opsyonèl.
+  if (data && typeof data === "object") {
+    message.data = Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)]));
+  }
 
   const image = isHttpImageUrl(bigImage) ? bigImage : (isHttpImageUrl(icon) ? icon : null);
   if (image) message.notification.image = image;
