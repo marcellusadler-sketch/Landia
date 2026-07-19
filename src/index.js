@@ -1,5 +1,5 @@
 /**
- * Football IA — Secure Worker
+ * Score Vision — Secure Worker
  * -----------------------------------------------------------------
  * Tout kle sekrè (Moncash, Natcash, Claude, Groq, Perplexity) rete
  * ISIT LA SÈLMAN, kòm "Secrets" nan Cloudflare. Telefòn moun yo
@@ -12,6 +12,14 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
+
+// 🔗 LYEN PIBLIK LOGO SCORE VISION LA — sa a se icon ki parèt sou CHAK
+// notifikasyon otomatik (menm jan Sofascore toujou montre pwòp logo li,
+// kèlkeswa match la). Li DWE yon URL https:// piblik (Firebase Storage,
+// Cloudflare R2/Pages, ImgBB, elatriye) — yon data:base64 PA ka mache
+// paske sèvè FCM dwe telechaje l li menm. Ranplase valè a anba a ak
+// vrè lyen logo Score Vision ou a.
+const SCORE_VISION_LOGO_URL = "https://REMPLASE-AK-LYEN-LOGO-SCORE-VISION.png";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -59,13 +67,13 @@ export default {
       if (path === "/run" && request.method === "GET")
         return json(await checkMatchesAndNotify(env));
 
-      // 🆕 Teste manyèlman voye notifikasyon ki nan liy datant (pushQueue) —
+      // Teste manyèlman voye notifikasyon ki nan liy datant (pushQueue) —
       // itil pou verifye yon "Notifikasyon Manyèl" ou fèk voye nan Admin lan
       // san w pa gen pou tann pwochen sik cron (chak 2 minit) la.
       if (path === "/run-queue" && request.method === "GET")
         return json(await processPushQueue(env));
 
-      if (path === "/" ) return json({ ok: true, service: "football-ia-worker" });
+      if (path === "/" ) return json({ ok: true, service: "score-vision-worker" });
 
       return json({ error: "Wout la pa egziste" }, 404);
     } catch (err) {
@@ -74,14 +82,15 @@ export default {
   },
 
   // 🔔 Sa a kouri otomatikman chak 2 minit (wè "crons" nan wrangler.toml) —
-  // li detekte gòl/match k ap kòmanse/fini, epi voye push notification.
+  // li detekte gòl/katon/chanjman/match k ap kòmanse/fini, epi voye push
+  // notification ak logo Score Vision, san okenn konfigirasyon admin.
   // San SPORTS_API_KEY_V2 ak FIREBASE_SERVICE_ACCOUNT mete kòm Secrets,
   // li senpleman pa fè anyen (san erè, san danje).
   async scheduled(event, env, ctx) {
     if (!env.FIREBASE_SERVICE_ACCOUNT) return;
-    // Detèksyon gòl/match otomatik bezwen SPORTS_API_KEY_V2 an plis.
+    // Detèksyon otomatik (gòl/katon/chanjman/match) bezwen SPORTS_API_KEY_V2 an plis.
     if (env.SPORTS_API_KEY_V2) ctx.waitUntil(checkMatchesAndNotify(env));
-    // 🆕 Notifikasyon Manyèl (pushQueue) sèlman bezwen FIREBASE_SERVICE_ACCOUNT —
+    // Notifikasyon Manyèl (pushQueue) sèlman bezwen FIREBASE_SERVICE_ACCOUNT —
     // li dwe kouri menm si V2 pa konfigire, sinon bouton "Voye Kounye a" nan
     // Admin lan pa janm fè anyen.
     ctx.waitUntil(processPushQueue(env));
@@ -297,24 +306,9 @@ async function sportsEvents(request, env) {
           e.strStatus = live.strStatus ?? e.strStatus;
           e.intHomeScore = live.intHomeScore ?? e.intHomeScore;
           e.intAwayScore = live.intAwayScore ?? e.intAwayScore;
-          // 🆕 VRÈ MINIT MATCH LA: livescore V2 bay yon chan "strProgress" (egzanp
-          // "63", "45+2", "HT"...) ki reprezante MOMAN REYÈL match la — anvan, nou
-          // te jete valè sa a nèt, kidonk app la pa t janm gen okenn chwa pase
-          // ESTIME minit la apati lè kickoff la. Kounye a nou transmèt li san
-          // chanje l bay index.html, ki kounye a konnen kijan pou l li/afiche l.
           e.strProgress = live.strProgress ?? e.strProgress;
         }
       });
-      // ➕ Match ki AP JWE kounye a (dapre livescore V2) men ki pa parèt nan
-      // rezilta eventsday.php a ditou (egzanp: dat/lig pa matche egzakteman,
-      // oswa metadata `dateEvent` API a bay la fo/an reta) — san sa a, match
-      // sa yo t ap voye notifikasyon gòl men pa janm parèt nan lis app la,
-      // menm si moun nan ap gade menm spò a. Yon match ki VRÈMAN ap jwe se pou
-      // JODI A pa definisyon, kèlkeswa sa `dateEvent` di — kidonk nou enjekte
-      // l san kondisyon sou `d` la egal jou aktyèl (UTC) sèvè a, san nou pa
-      // fè konfyans a `dateEvent` la ditou. Nou fè sa SÈLMAN pou rekèt "jodi
-      // a" (yon sèl nan 5 rekèt aparèy la fè yo), pou l pa "fantom-enjekte"
-      // an doub sou plizyè jou.
       const todayUTC = new Date().toISOString().split("T")[0];
       if (d === todayUTC) {
         liveMap.forEach((live, id) => {
@@ -325,13 +319,10 @@ async function sportsEvents(request, env) {
             strAwayTeam: live.strAwayTeam || "?",
             strLeague: live.strLeague || sport,
             strTime: live.strEventTime || live.strTime || null,
-            dateEvent: todayUTC, // 🔒 fòse jodi a — pa fè konfyans a dateEvent V2 la ki ka fo/an reta
+            dateEvent: todayUTC,
             strStatus: live.strStatus || "In Progress",
             intHomeScore: live.intHomeScore ?? null,
             intAwayScore: live.intAwayScore ?? null,
-            // 🆕 Menm rezon ak pi wo a: match sa yo pa gen okenn done V1 (yo pa t
-            // parèt nan eventsday.php), kidonk `strProgress`/`strVenue`/`strCountry`
-            // V2 la se SÈL sous nou genyen pou yo — nou pran yo si yo disponib.
             strProgress: live.strProgress ?? null,
             strVenue: live.strVenue ?? null,
             strCountry: live.strCountry ?? null,
@@ -341,8 +332,6 @@ async function sportsEvents(request, env) {
         });
       }
     } catch (ex) {
-      // Si V2 echwe pou nenpòt rezon (kota, rezo, elatriye), nou senpleman
-      // kontinye ak done V1 yo — pa kite tout wout la tonbe pou sa.
       console.log("livescore V2 merge err:", ex.message);
     }
   }
@@ -393,7 +382,7 @@ async function sportsEventStats(request, env) {
   });
 }
 
-/* ══════════════════ AI (Claude / Groq / Perplexity) ══════════════════ */
+/* ══════════════════ AI (Claude / Groq / Perplexity / Gemini) ══════════════════ */
 
 async function aiClaude(request, env) {
   const body = await request.json(); // { system, messages, max_tokens }
@@ -465,117 +454,85 @@ async function aiGemini(request, env) {
   return json(data, res.status);
 }
 
-/* ══════════════════ NOTIFIKASYON (GÒL / MATCH) ══════════════════ */
+/* ══════════════════ NOTIFIKASYON (ESTIL SOFASCORE) ══════════════════ */
 /* Bezwen: env.MATCH_STATE (KV binding), env.SPORTS_API_KEY_V2 (Secret),
-   env.FIREBASE_SERVICE_ACCOUNT (Secret — tout kontni fichye JSON la). */
+   env.FIREBASE_SERVICE_ACCOUNT (Secret — tout kontni fichye JSON la).
 
-// Spò nou siveye an tan reyèl pou notifikasyon yo (pa sèlman Soccer ankò).
+   ⚠️ CHANJMAN: nou retire SISTÈM MODÈL PÈSONALIZE ADMIN LAN nèt
+   (config/notifTemplates, buildNotifContent ki t ap li Firestore,
+   fillTemplatePlaceholders, elatriye). Kounye a, TOUT notifikasyon
+   OTOMATIK yo swiv EGZAKTEMAN menm fòma "estil Sofascore" a, ak logo
+   Score Vision (SCORE_VISION_LOGO_URL) — pa gen okenn chan pou
+   pèsonalize tit/mesaj/icon nan Admin.html ankò pou evènman otomatik.
+   Sèl bagay Admin gade se: (1) Notifikasyon Manyèl (pushQueue, pi ba),
+   ak (2) siveyans/estatistik match yo. */
+
+// Spò nou siveye an tan reyèl pou notifikasyon yo.
 const LIVE_SPORTS = ["Soccer", "Basketball", "American Football", "Baseball", "Ice Hockey"];
 
-// Icon ki reprezante chak spò — konsa notifikasyon an pa toujou parèt ak
-// yon boul foutbòl menm lè se yon match baskètbòl/foutbòl ameriken/elatriye.
-// Sèvi kòm DEFAULT/FALLBACK sèlman — si admin la konfigire yon modèl pèsonalize
-// nan config/notifTemplates (Firestore), modèl sa a genyen priyorite.
-const SPORT_ICON = {
-  Soccer: "⚽",
-  Basketball: "🏀",
-  "American Football": "🏈",
-  Baseball: "⚾",
-  "Ice Hockey": "🏒",
+// Spò kote nou ka jwenn detay "Katon" ak "Chanjman" fyab nan TheSportsDB
+// (timeline endpoint la pi konplè pou Soccer). Lòt spò yo kontinye resevwa
+// notifikasyon kickoff/pwen/fen nòmalman — n ap ka ajoute yo isit la pita
+// si done TheSportsDB pou yo vin pi konplè.
+const SPORTS_WITH_CARDS = ["Soccer"];
+const SPORTS_WITH_SUBS = ["Soccer"];
+
+// Mo "evènman ki fè pwen" an chanje selon spò a — men prensip la (yon
+// notifikasyon chak fwa eskò a chanje) rete menm jan pou tout spò.
+const SCORE_LABEL = {
+  Soccer: { ht: "But", fr: "But", en: "Goal", es: "Gol" },
+  "Ice Hockey": { ht: "But", fr: "But", en: "Goal", es: "Gol" },
+  Basketball: { ht: "Pwen", fr: "Point", en: "Score", es: "Puntos" },
+  "American Football": { ht: "Pwen", fr: "Point", en: "Score", es: "Puntos" },
+  Baseball: { ht: "Pwen", fr: "Point", en: "Run", es: "Carrera" },
 };
 
-// Tradiksyon mesaj notifikasyon yo — matche ak lang moun nan chwazi nan app
-// la (ht/fr/en/es), anrejistre nan chan "lang" doc fcmTokens la. Titr yo pa
-// gen okenn icon "codé an dur" ankò — icon ki koresponn ak spò a mete devan
-// pa notifText() pi ba, dinamikman.
-// ⚠️ Sa a se sèl FALLBACK — li itilize sèlman lè admin la PA konfigire yon
-// modèl pèsonalize pou evènman/spò sa a nan panel Admin (config/notifTemplates).
-const NOTIF_TEXT = {
-  ht: {
-    matchStart: (h, a) => ({ title: `Match kòmanse!`, body: `${h} vs ${a} vin kòmanse.` }),
-    goal: (scorer, h, a, hs, as_) => ({ title: `GÒL! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
-    matchEnd: (h, a, hs, as_) => ({ title: `🏁 Match fini`, body: `${h} ${hs} - ${as_} ${a}` }),
-  },
-  fr: {
-    matchStart: (h, a) => ({ title: `Le match a commencé !`, body: `${h} vs ${a} vient de commencer.` }),
-    goal: (scorer, h, a, hs, as_) => ({ title: `BUT ! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
-    matchEnd: (h, a, hs, as_) => ({ title: `🏁 Match terminé`, body: `${h} ${hs} - ${as_} ${a}` }),
-  },
-  en: {
-    matchStart: (h, a) => ({ title: `Match started!`, body: `${h} vs ${a} has kicked off.` }),
-    goal: (scorer, h, a, hs, as_) => ({ title: `GOAL! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
-    matchEnd: (h, a, hs, as_) => ({ title: `🏁 Match finished`, body: `${h} ${hs} - ${as_} ${a}` }),
-  },
-  es: {
-    matchStart: (h, a) => ({ title: `¡Comenzó el partido!`, body: `${h} vs ${a} ha comenzado.` }),
-    goal: (scorer, h, a, hs, as_) => ({ title: `¡GOL! ${scorer}`, body: `${h} ${hs} - ${as_} ${a}` }),
-    matchEnd: (h, a, hs, as_) => ({ title: `🏁 Partido finalizado`, body: `${h} ${hs} - ${as_} ${a}` }),
-  },
+const MATCH_START_TEXT = {
+  ht: "Match la kòmanse",
+  fr: "Le match commence",
+  en: "Match has started",
+  es: "Comenzó el partido",
 };
-// icon: pou matchStart/goal, mete icon spò a devan titr la. Pou matchEnd,
-// titr la deja gen 🏁 (drapo fini a se inivèsèl, li fè sans pou tout spò).
-function notifText(lang, type, icon, ...args) {
-  const dict = NOTIF_TEXT[lang] || NOTIF_TEXT.ht;
-  const { title, body } = dict[type](...args);
-  const finalTitle = type === "matchEnd" ? title : `${icon} ${title}`;
-  return { title: finalTitle, body };
-}
-
-// Mape kalite evènman entèn (matchStart/goal/matchEnd) ak kle modèl Admin la
-// itilize nan Firestore (kickoff/goal/finished).
-const EVENT_TYPE_TO_TEMPLATE_KEY = {
-  matchStart: "kickoff",
-  goal: "goal",
-  matchEnd: "finished",
+const MATCH_END_TEXT = {
+  ht: "Match fini",
+  fr: "Match terminé",
+  en: "Match finished",
+  es: "Partido finalizado",
+};
+const CARD_LABEL = {
+  yellow: { ht: "Katon jòn", fr: "Carton jaune", en: "Yellow card", es: "Tarjeta amarilla" },
+  red: { ht: "Katon wouj", fr: "Carton rouge", en: "Red card", es: "Tarjeta roja" },
+};
+const SUB_LABEL = {
+  ht: "Chanjman", fr: "Changement", en: "Substitution", es: "Cambio",
 };
 
-// Ranpli {home}/{away}/{team}/{league}/{scoreHome}/{scoreAway} nan yon modèl
-// tèks admin la ekri, ak VRÈ done match la (menm non plasholdè yo itilize
-// nan panel Admin — index.html, fonksyon fillPlaceholders()).
-function fillTemplatePlaceholders(txt, data) {
-  return (txt || "")
-    .replaceAll("{home}", data.home ?? "")
-    .replaceAll("{away}", data.away ?? "")
-    .replaceAll("{team}", data.team ?? "")
-    .replaceAll("{league}", data.league ?? "")
-    .replaceAll("{scoreHome}", String(data.scoreHome ?? ""))
-    .replaceAll("{scoreAway}", String(data.scoreAway ?? ""));
-}
+// Konstwi tit/kò yon notifikasyon otomatik — estil Sofascore: TIT la se
+// non match la ("Kay - Deyò"), KÒ a se liy evènman an (minit + detay).
+// Pa gen okenn emoji nan tèks la — jis logo Score Vision kòm icon.
+function buildAutoNotif(sport, evType, lang, data) {
+  const L = lang && MATCH_START_TEXT[lang] ? lang : "ht";
+  const title = `${data.home} - ${data.away}`;
+  const minute = data.minute ? `${data.minute}' ` : "";
+  let body;
 
-// Bati kontni notifikasyon an (title/body/icon) pou yon evènman done —
-// priyorite: modèl pèsonalize admin la konfigire nan config/notifTemplates,
-// epi si pa gen youn (oswa li dezaktive), tonbe sou tradiksyon icon
-// "codé an dur" yo (NOTIF_TEXT/SPORT_ICON), jan l te fèt anvan.
-// Retounen `null` si evènman sa a dwe SKIPE (admin la dezaktive l esprè).
-function buildNotifContent(templates, sport, evType, lang, data) {
-  const templateKey = EVENT_TYPE_TO_TEMPLATE_KEY[evType];
-  const tplEvt = templates?.sports?.[sport]?.events?.[templateKey];
-
-  if (tplEvt) {
-    if (tplEvt.enabled === false) return null; // admin dezaktive evènman sa a nèt
-    const hasCustomText = (tplEvt.title && tplEvt.title.trim()) || (tplEvt.body && tplEvt.body.trim());
-    if (hasCustomText) {
-      const title = fillTemplatePlaceholders(tplEvt.title, data) || "Score Vision";
-      const body = fillTemplatePlaceholders(tplEvt.body, data);
-      const icon = (tplEvt.icon || "").trim() || null;
-      return { title, body, icon };
-    }
-    // Modèl la egziste men san tit/mesaj pèsonalize — itilize fallback la
-    // pou tèks la, men respekte icon PNG admin la mete si genyen.
-    const fallback = notifText(lang, evType, SPORT_ICON[sport] || "⚽", ...fallbackArgs(evType, data));
-    const icon = (tplEvt.icon || "").trim() || null;
-    return { ...fallback, icon };
+  if (evType === "matchStart") {
+    body = MATCH_START_TEXT[L];
+  } else if (evType === "goal") {
+    const scoreWord = (SCORE_LABEL[sport] && SCORE_LABEL[sport][L]) || SCORE_LABEL.Soccer[L];
+    body = `${minute}${scoreWord} : ${data.scoreHome} - ${data.scoreAway}${data.scorer ? "  " + data.scorer : ""}`;
+  } else if (evType === "card") {
+    const cardWord = CARD_LABEL[data.cardColor === "red" ? "red" : "yellow"][L];
+    body = `${minute}${cardWord} : ${data.player || "?"}${data.team ? " (" + data.team + ")" : ""}`;
+  } else if (evType === "substitution") {
+    body = `${minute}${SUB_LABEL[L]} : ${data.player || "?"}${data.team ? " (" + data.team + ")" : ""}`;
+  } else if (evType === "matchEnd") {
+    body = `${MATCH_END_TEXT[L]} : ${data.scoreHome} - ${data.scoreAway}`;
+  } else {
+    body = "";
   }
 
-  // Pa gen okenn modèl konfigire pou spò/evènman sa a — konpòtman orijinal la.
-  const fallback = notifText(lang, evType, SPORT_ICON[sport] || "⚽", ...fallbackArgs(evType, data));
-  return { ...fallback, icon: null };
-}
-
-function fallbackArgs(evType, data) {
-  if (evType === "matchStart") return [data.home, data.away];
-  if (evType === "goal") return [data.team, data.home, data.away, data.scoreHome, data.scoreAway];
-  return [data.home, data.away, data.scoreHome, data.scoreAway]; // matchEnd
+  return { title, body, icon: SCORE_VISION_LOGO_URL };
 }
 
 async function checkMatchesAndNotify(env) {
@@ -584,8 +541,6 @@ async function checkMatchesAndNotify(env) {
   try {
     const events = await fetchLiveEvents(env);
     log.checked = events.length;
-    // Dyagnostik: montre egzakteman ki valè estati TheSportsDB voye, pou
-    // konfime yo matche ak "In Progress"/"1H"/"Match Finished" anba a.
     log.statusesSeen = [...new Set(events.map((e) => e.strStatus))];
     if (events.length === 0) return log;
 
@@ -595,6 +550,7 @@ async function checkMatchesAndNotify(env) {
       const homeScore = parseInt(ev.intHomeScore ?? "0") || 0;
       const awayScore = parseInt(ev.intAwayScore ?? "0") || 0;
       const status = ev.strStatus || "";
+      const minute = ev.strProgress || null;
 
       const prevRaw = await env.MATCH_STATE.get(`match:${matchId}`);
       const prev = prevRaw ? JSON.parse(prevRaw) : null;
@@ -602,25 +558,62 @@ async function checkMatchesAndNotify(env) {
       const sport = ev._sport || "Soccer";
       const league = ev.strLeague || "";
 
+      let seenTimeline = prev?.seenTimeline || [];
+
       if (!prev) {
         if (status === "In Progress" || status === "1H") {
-          toNotify.push({ type: "matchStart", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null });
+          toNotify.push({ type: "matchStart", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null, minute });
         }
       } else {
         if (homeScore > prev.homeScore) {
-          toNotify.push({ type: "goal", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strHomeTeam });
+          toNotify.push({ type: "goal", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strHomeTeam, minute });
         }
         if (awayScore > prev.awayScore) {
-          toNotify.push({ type: "goal", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strAwayTeam });
+          toNotify.push({ type: "goal", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: ev.strAwayTeam, minute });
         }
         if (prev.status !== "Match Finished" && status === "Match Finished") {
-          toNotify.push({ type: "matchEnd", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null });
+          toNotify.push({ type: "matchEnd", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, hs: homeScore, as_: awayScore, scorer: null, minute });
+        }
+      }
+
+      // 🟨🟥🔁 Katon ak Chanjman — sèlman pou spò ki nan SPORTS_WITH_CARDS/
+      // SPORTS_WITH_SUBS, epi sèlman pandan match la ap jwe (pa gen anyen
+      // pou detekte si match la poko kòmanse oswa deja fini).
+      const isLive = status === "In Progress" || status === "1H" || status === "2H" || status === "HT";
+      if (isLive && (SPORTS_WITH_CARDS.includes(sport) || SPORTS_WITH_SUBS.includes(sport))) {
+        try {
+          const timeline = await fetchTimelineEvents(env, matchId);
+          for (const t of timeline) {
+            const tid = String(t.idTimeline || `${t.strTimeline}-${t.intTime}-${t.idPlayer || ""}`);
+            if (seenTimeline.includes(tid)) continue;
+
+            const team =
+              String(t.idTeam) === String(ev.idHomeTeam) ? ev.strHomeTeam :
+              String(t.idTeam) === String(ev.idAwayTeam) ? ev.strAwayTeam : "";
+            const player = t.strPlayer || "";
+            const tMinute = t.intTime || minute;
+
+            if (SPORTS_WITH_CARDS.includes(sport) && t.strTimeline === "Yellow Card") {
+              toNotify.push({ type: "card", cardColor: "yellow", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, player, team, minute: tMinute });
+            } else if (SPORTS_WITH_CARDS.includes(sport) && t.strTimeline === "Red Card") {
+              toNotify.push({ type: "card", cardColor: "red", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, player, team, minute: tMinute });
+            } else if (SPORTS_WITH_SUBS.includes(sport) && t.strTimeline === "Substitution") {
+              toNotify.push({ type: "substitution", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, player, team, minute: tMinute });
+            } else {
+              continue; // lòt kalite antre nan timeline (egzanp "Goal") — deja jere pi wo a
+            }
+            seenTimeline = [...seenTimeline, tid];
+          }
+        } catch (ex) {
+          // Si timeline echwe (kota, match san detay, elatriye), nou senpleman
+          // pa detekte katon/chanjman pou match sa a fwa sa a — pa kase rès la.
+          log.errors.push(`timeline ${matchId}: ${ex.message}`);
         }
       }
 
       await env.MATCH_STATE.put(
         `match:${matchId}`,
-        JSON.stringify({ homeScore, awayScore, status, sport }),
+        JSON.stringify({ homeScore, awayScore, status, sport, seenTimeline }),
         { expirationTtl: 60 * 60 * 6 }
       );
     }
@@ -629,39 +622,30 @@ async function checkMatchesAndNotify(env) {
 
     const accessToken = await getGoogleAccessToken(env);
     const projectId = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT).project_id;
-
-    // 🔧 KOREKSYON: li konfigirasyon (tit/mesaj/PNG/enabled) admin la
-    // sovgade nan Firestore (config/notifTemplates) — san sa a, Worker la
-    // te toujou voye menm tèks/icon "codé an dur" yo, kèlkeswa sa admin
-    // te konfigire nan panel la.
-    const [tokens, templates] = await Promise.all([
-      getFcmTokens(env, accessToken, projectId),
-      getNotifTemplates(env, accessToken, projectId),
-    ]);
+    const tokens = await getFcmTokens(env, accessToken, projectId);
 
     for (const ev of toNotify) {
-      // 🔔 Filtre: sèlman moun ki gen menm spò/chanpyona a chwazi nan app la
-      // resevwa notifikasyon sa a (egzanp: moun ki sou Basketball pa resevwa
-      // notif Foutbòl Ameriken, elatriye) — chak spò/chanpyona jere apa.
+      // Sèlman moun ki gen menm spò a chwazi nan app la resevwa notifikasyon sa a.
       const targetTokens = tokens.filter((t) => (t.sport || "Soccer") === ev.sport);
       for (const t of targetTokens) {
         try {
           const data = {
             home: ev.h,
             away: ev.a,
-            team: ev.scorer || ev.h,
-            league: ev.league,
             scoreHome: ev.hs,
             scoreAway: ev.as_,
+            scorer: ev.scorer,
+            player: ev.player,
+            team: ev.team,
+            cardColor: ev.cardColor,
+            minute: ev.minute,
           };
-          const content = buildNotifContent(templates, ev.sport, ev.type, t.lang, data);
-          if (!content) continue; // admin dezaktive evènman sa a pou spò sa a
-
+          const content = buildAutoNotif(ev.sport, ev.type, t.lang, data);
           await sendPush(accessToken, projectId, t.token, content.title, content.body, content.icon);
           log.notifications++;
         } catch (e) {
           log.errors.push(e.message);
-          // 🧹 Si FCM di kle sa a pa valab ankò (aparèy dezenstale/deteni),
+          // Si FCM di kle sa a pa valab ankò (aparèy dezenstale/deteni),
           // retire l nan Firestore pou li sispann akimile e voye doublon.
           if (e.invalidToken && t.docName) {
             try {
@@ -678,6 +662,18 @@ async function checkMatchesAndNotify(env) {
   }
 
   return log;
+}
+
+// Li timeline yon match espesifik (Katon/Chanjman/Gòl) — se menm
+// lookuptimeline.php TheSportsDB ki sèvi tou nan sportsEventStats().
+async function fetchTimelineEvents(env, matchId) {
+  const key = env.SPORTS_API_KEY || "123";
+  const res = await fetch(
+    `https://www.thesportsdb.com/api/v1/json/${key}/lookuptimeline.php?id=${encodeURIComponent(matchId)}`
+  );
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.timeline || [];
 }
 
 async function fetchLiveEvents(env) {
@@ -771,7 +767,7 @@ async function getFcmTokens(env, accessToken, projectId) {
   );
   const data = await res.json();
   if (!data.documents) return [];
-  // 🧹 Dedup pa VALÈ token la (pa doc ID sèlman) — si de dokiman diferan
+  // Dedup pa VALÈ token la (pa doc ID sèlman) — si de dokiman diferan
   // ta gen menm valè token (kopi/erè done), nou voye yon sèl fwa.
   const byToken = new Map();
   data.documents.forEach((doc) => {
@@ -782,32 +778,33 @@ async function getFcmTokens(env, accessToken, projectId) {
     byToken.set(token, {
       token,
       lang: doc.fields?.lang?.stringValue || "ht",
-      sport: doc.fields?.sport?.stringValue || "Soccer", // 🔔 spò/chanpyona moun nan chwazi nan app la
+      sport: doc.fields?.sport?.stringValue || "Soccer", // spò/chanpyona moun nan chwazi nan app la
       docName: doc.name, // rezoud chemen konplè Firestore a — bezwen l pou ka retire token mouri
     });
   });
   return [...byToken.values()];
 }
 
-// 🆕 Li dokiman config/notifTemplates la (menm dokiman panel Admin lan ekri
-// ladan, ak SDK Firebase Web la) atravè REST API Firestore a, epi konvèti
-// fòma "tipe" REST la (stringValue/mapValue/booleanValue/elatriye) an yon
-// senp objè JavaScript nòmal pou nou ka li l fasil.
-async function getNotifTemplates(env, accessToken, projectId) {
-  try {
-    const res = await fetch(
-      `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/config/notifTemplates`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    if (res.status === 404) return null; // admin la poko konfigire anyen — nòmal
-    if (!res.ok) throw new Error(`Firestore config/notifTemplates HTTP ${res.status}`);
-    const doc = await res.json();
-    if (!doc.fields) return null;
-    return fsFieldsToObj(doc.fields);
-  } catch (ex) {
-    console.log("getNotifTemplates err:", ex.message);
-    return null; // si li echwe, nou tonbe sou fallback "codé an dur" a — pa kase notifikasyon yo
-  }
+/* ══════════════════ NOTIFIKASYON MANYÈL (pushQueue) — rete jan l te ye ══════════════════
+   Sa a se SÈL fason ki rete pou "pèsonalize" yon notifikasyon: Admin ekri yon
+   tit/mesaj limenm nan panel la (ak yon imaj si l vle), sa kreye yon dokiman
+   nan pushQueue ak status:'pending', epi Worker la voye l bay tout moun (oswa
+   yon spò espesifik) — endepandan de sistèm otomatik gòl/katon/chanjman anwo a. */
+
+// Li tout dokiman ki nan koleksyon Firestore `pushQueue` ak status:'pending'
+// (kreye pa bouton "📣 Voye Notifikasyon Manyèl" nan panel Admin lan).
+async function getPendingPushQueue(env, accessToken, projectId) {
+  const res = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/pushQueue`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error(`Firestore pushQueue HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data.documents) return [];
+  return data.documents
+    .map((doc) => ({ ...fsFieldsToObj(doc.fields || {}), docName: doc.name }))
+    .filter((d) => (d.status || "pending") === "pending");
 }
 
 // Konvèti yon sèl valè Firestore REST (fòma { stringValue }, { mapValue }, elatriye)
@@ -829,22 +826,6 @@ function fsFieldsToObj(fields) {
   const out = {};
   for (const key in fields) out[key] = fsValueToJs(fields[key]);
   return out;
-}
-
-// 🆕 Li tout dokiman ki nan koleksyon Firestore `pushQueue` ak status:'pending'
-// (kreye pa bouton "📣 Voye Notifikasyon Manyèl" nan panel Admin lan).
-async function getPendingPushQueue(env, accessToken, projectId) {
-  const res = await fetch(
-    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/pushQueue`,
-    { headers: { Authorization: `Bearer ${accessToken}` } }
-  );
-  if (res.status === 404) return [];
-  if (!res.ok) throw new Error(`Firestore pushQueue HTTP ${res.status}`);
-  const data = await res.json();
-  if (!data.documents) return [];
-  return data.documents
-    .map((doc) => ({ ...fsFieldsToObj(doc.fields || {}), docName: doc.name }))
-    .filter((d) => (d.status || "pending") === "pending");
 }
 
 // Make yon dokiman pushQueue kòm trete (sent/error), pou li pa voye an doub
@@ -870,7 +851,7 @@ async function markPushQueueDone(accessToken, docName, status, sentCount, errorM
   if (!res.ok) throw new Error(`Firestore pushQueue update HTTP ${res.status}`);
 }
 
-// 🆕 Trete "Notifikasyon Manyèl" yo: li chak dokiman 'pending' nan pushQueue,
+// Trete "Notifikasyon Manyèl" yo: li chak dokiman 'pending' nan pushQueue,
 // jwenn bon sib la (tout moun, oswa sèlman yon spò espesifik), voye push la
 // bay FCM, epi make dokiman an kòm trete pou l pa voye an doub.
 async function processPushQueue(env) {
@@ -898,11 +879,15 @@ async function processPushQueue(env) {
             ? tokens.filter((t) => (t.sport || "Soccer") === q.target)
             : tokens;
 
+        // Si Admin pa presize yon icon/imaj pou notifikasyon manyèl la,
+        // nou tonbe sou logo Score Vision an, menm jan ak notifikasyon otomatik yo.
+        const icon = q.icon || SCORE_VISION_LOGO_URL;
+
         let sentCount = 0;
         const errs = [];
         for (const t of targetTokens) {
           try {
-            await sendPush(accessToken, projectId, t.token, q.title, q.body, q.icon, q.image);
+            await sendPush(accessToken, projectId, t.token, q.title, q.body, icon, q.image);
             sentCount++;
           } catch (e) {
             errs.push(e.message);
@@ -941,15 +926,9 @@ async function deleteFcmToken(accessToken, docName) {
   if (!res.ok) throw new Error(`Firestore delete ${res.status}`);
 }
 
-// ⚠️ IMAJ/ICON PÈSONALIZE: FCM (Android "big picture" ak Web Push icon)
-// mande yon URL https:// piblik li ka telechaje — yon "data:image/..;base64,.."
-// (foto ki telechaje dirèkteman soti nan Galri epi ki anrejistre tèl quèl nan
-// Firestore) PA ka mache isit la, paske sèvè Google/FCM pa ka "telechaje" yon
-// data URI konsa. Si w vle PNG/foto pèsonalize a reyèlman parèt nan
-// notifikasyon OS reyèl la (pa sèlman nan APÈSI admin lan), icon/imaj la
-// dwe ekri kòm yon lyen https:// ki eksiste deja sou entènèt (egzanp: yon
-// imaj ou telechaje sou Firebase Storage, Imgur, oswa sou pwòp sit ou a) —
-// se sèlman nan ka sa a nou anvwaye l bay FCM anba a.
+// ⚠️ IMAJ/ICON: FCM (Android "big picture" ak Web Push icon) mande yon URL
+// https:// piblik li ka telechaje — yon "data:image/..;base64,.." PA ka
+// mache isit la, paske sèvè Google/FCM pa ka "telechaje" yon data URI konsa.
 function isHttpImageUrl(url) {
   return typeof url === "string" && /^https?:\/\//i.test(url);
 }
@@ -957,14 +936,12 @@ function isHttpImageUrl(url) {
 async function sendPush(accessToken, projectId, token, title, body, icon, bigImage) {
   const message = { token, notification: { title, body } };
 
-  // Big picture / imaj rich — sèlman si se yon lyen https:// piblik, paske
-  // sèvè Google/FCM dwe telechaje l pou Android/iOS (data:base64 pa mache).
+  // Big picture / imaj rich — sèlman si se yon lyen https:// piblik.
   const image = isHttpImageUrl(bigImage) ? bigImage : (isHttpImageUrl(icon) ? icon : null);
   if (image) message.notification.image = image;
 
-  // Icon/imaj Web Push (navigatè/PWA) — kontrèman ak `notification.image`
-  // anwo a, sa a rezoud kote NAVIGATÈ moun nan ye, kidonk yon chemen
-  // relatif tankou "/icon-192.png" mache tou (li pa oblije yon URL absoli).
+  // Icon/imaj Web Push (navigatè/PWA) — rezoud kote NAVIGATÈ moun nan ye,
+  // kidonk yon chemen relatif tankou "/icon-192.png" mache tou.
   if (icon || image) {
     message.webpush = { notification: {} };
     if (icon) message.webpush.notification.icon = icon;
@@ -981,13 +958,7 @@ async function sendPush(accessToken, projectId, token, title, body, icon, bigIma
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    // Si FCM reponn ak yon erè (kle envalid, move projet, token ekspire,
-    // elatriye), nou dwe voye sa monte kòm erè — pa kite l pase an silans,
-    // sinon log.notifications++ ap kontinye konte "siksè" ki pa t janm rive.
     const err = new Error(`FCM ${res.status} pou token ${token.slice(0, 12)}...: ${errText}`);
-    // 🔎 Idantifye si se yon token ki mouri pou tout tan (aparèy dezenstale,
-    // app dezabòne, elatriye) — sa a se sèl ka kote nou ta dwe netwaye
-    // Firestore. Lòt erè (rezo, kota, kle envalid) rete jis erè tanporè.
     try {
       const parsed = JSON.parse(errText);
       const detail = parsed?.error?.details?.find((d) => d.errorCode);
