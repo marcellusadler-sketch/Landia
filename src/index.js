@@ -15,7 +15,7 @@
  *     TOULE 2 jwè yo — jwè ki ANTRE a (`strPlayer`) AK jwè ki SOTI a
  *     (`strAssist`, chan TheSportsDB itilize pou sa). Anvan, sèl jwè
  *     ki antre a te parèt.
- *  4. 🆕 AJOUTE: wout "/notify/admin-push" — voye yon push FCM bay
+ *  4. AJOUTE: wout "/notify/admin-push" — voye yon push FCM bay
  *     TELEFÒN ADMIN yo (koleksyon Firestore `adminPushTokens`, ranpli
  *     lè admin klike "Aktive Notif Menm Si Aplikasyon Fèmen" nan
  *     Admin.html) chak fwa gen yon nouvo mesaj kontak, demann Premium,
@@ -23,7 +23,15 @@
  *     Firebase (FIREBASE_SERVICE_ACCOUNT) ak menm fonksyon sendPush()
  *     ki deja egziste pou notifikasyon match yo — pa gen okenn nouvo
  *     sekrè pou ajoute.
- *  5. Rès kòd la (Moncash, Natcash, AI, pushQueue, elatriye) rete
+ *  5. 🆕 AJOUTE: wout "/notify/user-push" — voye yon push FCM bay YON
+ *     SÈL telefòn ITILIZATÈ espesifik. Sèvi pou lè ADMIN reponn yon
+ *     moun nan tchat "Kontak" la (koleksyon Firestore `contactMessages`,
+ *     chan `pushToken` ki ranpli otomatikman pa index.html) — konsa
+ *     moun nan resevwa yon notifikasyon menm si telefòn/app li fèmen.
+ *     Diferan de /notify/admin-push: li resevwa TOKEN an DIRÈKTEMAN nan
+ *     kò rekèt la (pa gen okenn lis Firestore pou chèche), paske se yon
+ *     sèl moun espesifik n ap voye bay, pa tout admin yo.
+ *  6. Rès kòd la (Moncash, Natcash, AI, pushQueue, elatriye) rete
  *     EGZAKTEMAN menm jan ak orijinal la — pa gen okenn lòt chanjman.
  *
  * Tout kle sekrè (Moncash, Natcash, Claude, Groq, Perplexity) rete
@@ -88,9 +96,14 @@ export default {
       if (path === "/ai/gemini" && request.method === "POST")
         return await aiGemini(request, env);
 
-      // 🆕 Voye push FCM bay telefòn ADMIN yo (menm si Admin.html fèmen)
+      // Voye push FCM bay telefòn ADMIN yo (menm si Admin.html fèmen)
       if (path === "/notify/admin-push" && request.method === "POST")
         return await notifyAdminPush(request, env);
+
+      // 🆕 Voye push FCM bay YON SÈL telefòn ITILIZATÈ (egzanp: lè Admin
+      // reponn yon mesaj nan tchat Kontak la)
+      if (path === "/notify/user-push" && request.method === "POST")
+        return await notifyUserPush(request, env);
 
       // Teste manyèlman detèksyon gòl/notifikasyon (menm kòd ki kouri chak 2 minit)
       if (path === "/run" && request.method === "GET")
@@ -495,12 +508,6 @@ const SUB_LABEL = {
   ht: "Chanjman", fr: "Changement", en: "Substitution", es: "Cambio",
 };
 
-// 🆕 "goal" enkli non jwè a (data.player) ANPLIS non ekip la (data.scorer),
-// lè done a disponib — egzanp: "34' But : 1 - 0  J. Duval (Violette AC)"
-//
-// 🆕 FIX "substitution" kounye a montre TOULE 2 jwè yo: jwè ki ANTRE a
-// (data.playerIn) AK jwè ki SOTI a (data.playerOut) — egzanp:
-// "67' Chanjman : J. Duval ⇄ M. Pierre (Violette AC)"
 function buildAutoNotif(sport, evType, lang, data) {
   const L = lang && MATCH_START_TEXT[lang] ? lang : "ht";
   const title = `${data.home} - ${data.away}`;
@@ -511,17 +518,12 @@ function buildAutoNotif(sport, evType, lang, data) {
     body = MATCH_START_TEXT[L];
   } else if (evType === "goal") {
     const scoreWord = (SCORE_LABEL[sport] && SCORE_LABEL[sport][L]) || SCORE_LABEL.Soccer[L];
-    // si nou gen non jwè a (data.player), montre "Jwè (Ekip)";
-    // si nou pa gen li, retounen sou ansyen konpòtman an: sèlman non ekip la.
     const scorerText = data.player ? `${data.player} (${data.scorer})` : data.scorer;
     body = `${minute}${scoreWord} : ${data.scoreHome} - ${data.scoreAway}${scorerText ? "  " + scorerText : ""}`;
   } else if (evType === "card") {
     const cardWord = CARD_LABEL[data.cardColor === "red" ? "red" : "yellow"][L];
     body = `${minute}${cardWord} : ${data.player || "?"}${data.team ? " (" + data.team + ")" : ""}`;
   } else if (evType === "substitution") {
-    // 🆕 montre jwè ki antre a AK jwè ki soti a, lè toude disponib.
-    // Si nou pa gen youn nan yo (done TheSportsDB enkonplè pou match sa a),
-    // nou montre sa nou genyen an sèlman — jamè nou kraze sou yon "?" vid.
     const inP = data.playerIn || "?";
     const outText = data.playerOut ? ` ⇄ ${data.playerOut}` : "";
     body = `${minute}${SUB_LABEL[L]} : ${inP}${outText}${data.team ? " (" + data.team + ")" : ""}`;
@@ -559,8 +561,6 @@ async function checkMatchesAndNotify(env) {
 
       let seenTimeline = prev?.seenTimeline || [];
 
-      // Nou chèche timeline la YON SÈL FWA pa match pa sik (anvan gòl,
-      // katon, ak chanjman te ka mande jiska 2 apèl separe san rezon).
       const isLive = status === "In Progress" || status === "1H" || status === "2H" || status === "HT";
       const needsTimeline =
         isLive &&
@@ -575,9 +575,6 @@ async function checkMatchesAndNotify(env) {
         }
       }
 
-      // Jwenn non premye jwè "Goal" nan timeline a pou yon ekip bay,
-      // ki poko make kòm "seenTimeline" — epi make l tousuit pou nou
-      // pa itilize l ankò pou yon lòt gòl.
       const findGoalScorer = (teamName) => {
         for (const t of timeline) {
           if (t.strTimeline !== "Goal" && t.strTimeline !== "Goal - Penalty") continue;
@@ -591,7 +588,7 @@ async function checkMatchesAndNotify(env) {
             return t.strPlayer;
           }
         }
-        return null; // Timeline a poko mete ajou — nou voye notifikasyon an san non jwè a pou fwa sa a
+        return null;
       };
 
       if (!prev) {
@@ -612,8 +609,6 @@ async function checkMatchesAndNotify(env) {
         }
       }
 
-      // 🟨🟥🔁 Katon ak Chanjman — itilize MENM `timeline` nou chèche pi wo a
-      // (pa gen dezyèm apèl API ankò).
       if (isLive && (SPORTS_WITH_CARDS.includes(sport) || SPORTS_WITH_SUBS.includes(sport))) {
         for (const t of timeline) {
           const tid = String(t.idTimeline || `${t.strTimeline}-${t.intTime}-${t.idPlayer || ""}`);
@@ -630,8 +625,6 @@ async function checkMatchesAndNotify(env) {
           } else if (SPORTS_WITH_CARDS.includes(sport) && t.strTimeline === "Red Card") {
             toNotify.push({ type: "card", cardColor: "red", sport, league, h: ev.strHomeTeam, a: ev.strAwayTeam, player, team, minute: tMinute });
           } else if (SPORTS_WITH_SUBS.includes(sport) && t.strTimeline === "Substitution") {
-            // 🆕 FIX: `strPlayer` se jwè ki ANTRE a, `strAssist` se jwè ki SOTI a.
-            // Anvan, sèl `strPlayer` (antre a) te itilize — jwè ki soti a pa t janm parèt.
             toNotify.push({
               type: "substitution", sport, league,
               h: ev.strHomeTeam, a: ev.strAwayTeam,
@@ -639,7 +632,7 @@ async function checkMatchesAndNotify(env) {
               team, minute: tMinute
             });
           } else {
-            continue; // "Goal" ak lòt kalite deja jere pa findGoalScorer() pi wo a
+            continue;
           }
           seenTimeline = [...seenTimeline, tid];
         }
@@ -668,9 +661,9 @@ async function checkMatchesAndNotify(env) {
             scoreHome: ev.hs,
             scoreAway: ev.as_,
             scorer: ev.scorer,
-            player: ev.player, // non jwè a — itilize pou gòl
-            playerIn: ev.playerIn, // 🆕 jwè ki antre a — chanjman
-            playerOut: ev.playerOut, // 🆕 jwè ki soti a — chanjman
+            player: ev.player,
+            playerIn: ev.playerIn,
+            playerOut: ev.playerOut,
             team: ev.team,
             cardColor: ev.cardColor,
             minute: ev.minute,
@@ -814,16 +807,8 @@ async function getFcmTokens(env, accessToken, projectId) {
 }
 
 /* ══════════════════ NOTIFIKASYON ADMIN (push menm si Admin.html fèmen) ══════════════════ */
-// Koute pa Firestore triggers — se index.html ki rele wout sa a DIRÈKTEMAN
-// (fetch fire-and-forget) chak fwa gen yon nouvo mesaj kontak, demann
-// Premium, oswa demann reset modpas. Sèvi ak MENM Kont Sèvis
-// (FIREBASE_SERVICE_ACCOUNT) ak MENM fonksyon sendPush()/getGoogleAccessToken()
-// ki deja egziste pou notifikasyon match yo pi wo a.
 
 async function getAdminPushTokens(env, accessToken, projectId) {
-  // Nan Admin.html, chak dokiman nan "adminPushTokens" gen TOKEN lan
-  // kòm ID dokiman an (db.collection('adminPushTokens').doc(token).set(...)),
-  // pa kòm yon chan — se poutèt sa nou pran non dokiman an.
   const res = await fetch(
     `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/adminPushTokens`,
     { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -879,6 +864,67 @@ async function notifyAdminPush(request, env) {
     return json({ ok: true, sent, total: tokens.length, errors: errors.slice(0, 3) });
   } catch (e) {
     return json({ error: e.message || "Erè sèvè" }, 500);
+  }
+}
+
+/* ══════════════════ 🆕 NOTIFIKASYON ITILIZATÈ (repons Admin nan tchat Kontak) ══════════════════ */
+// Diferan de notifyAdminPush pi wo a: isit la nou pa chèche okenn lis nan
+// Firestore — nou resevwa YON SÈL token dirèkteman nan kò (body) rekèt la,
+// paske se yon SÈL moun espesifik n ap voye bay (moun ki t ap tann repons
+// Admin nan tchat Kontak la), pa tout admin yo.
+//
+// Admin.html dwe rele wout sa a APRE li fin anrejistre repons li nan
+// Firestore (contactMessages.messages arrayUnion sender:'admin'), lè l li
+// chan `pushToken` ki deja sou dokiman contactMessages sa a (index.html
+// ranpli chan sa a otomatikman — gade fonksyon syncPushTokenToContactThread()
+// nan index.html).
+//
+// Egzanp apèl (nan Admin.html):
+//   fetch("https://TON-WORKER-URL/notify/user-push", {
+//     method:"POST", headers:{"Content-Type":"application/json"},
+//     body: JSON.stringify({
+//       token: threadDoc.pushToken,
+//       title: "Admin — Score Vision",
+//       body: texRepons,
+//       target: "contact"
+//     })
+//   });
+
+async function notifyUserPush(request, env) {
+  if (!env.FIREBASE_SERVICE_ACCOUNT) {
+    return json({ error: "FIREBASE_SERVICE_ACCOUNT pa konfigire sou Worker la" }, 500);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch (e) {
+    return json({ error: "JSON envalid" }, 400);
+  }
+  const { token, title, body: msgBody, target } = body || {};
+  if (!token || !title || !msgBody) {
+    return json({ error: "token, title ak body obligatwa" }, 400);
+  }
+
+  try {
+    const accessToken = await getGoogleAccessToken(env);
+    const projectId = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT).project_id;
+    await sendPush(
+      accessToken,
+      projectId,
+      token,
+      title,
+      msgBody,
+      SCORE_VISION_LOGO_URL,
+      null,
+      target ? { target } : null
+    );
+    return json({ ok: true, sent: 1 });
+  } catch (e) {
+    // Si token lan mouri (moun nan dezenstale app la, retire pèmisyon
+    // notifikasyon, elatriye), nou di Admin.html sa a avèk invalidToken:true
+    // pou li ka retire chan pushToken sou dokiman contactMessages a si l vle.
+    return json({ error: e.message || "Erè sèvè", invalidToken: !!e.invalidToken }, 500);
   }
 }
 
@@ -1011,10 +1057,6 @@ function isHttpImageUrl(url) {
 async function sendPush(accessToken, projectId, token, title, body, icon, bigImage, data) {
   const message = { token, notification: { title, body } };
 
-  // 🆕 "data" opsyonèl (egzanp: {target:'card-messages'}) — itilize pou
-  // Admin.html/Service Worker la ka konnen ki kat pou l louvri lè moun
-  // klike sou notifikasyon an. Tout ansyen apèl sendPush() kontinye
-  // mache menm jan paske paramèt sa a opsyonèl.
   if (data && typeof data === "object") {
     message.data = Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)]));
   }
