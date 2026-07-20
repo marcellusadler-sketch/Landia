@@ -1,42 +1,28 @@
 /**
- * Score Vision — Secure Worker (VÈSYON KORIJE)
+ * Score Vision — Secure Worker (VÈSYON KORIJE + KLOCH PA CHANPYONA)
  * -----------------------------------------------------------------
- * CHANJMAN NAN VÈSYON SA A (konpare ak orijinal la):
+ * NOUVO CHANJMAN NAN VÈSYON SA A (konpare ak vèsyon anvan an):
  *
- *  1. AJOUTE: notifikasyon "gòl" kounye a enkli NON JWÈ ki fè gòl la
- *     (pa sèlman non ekip la), lè done sa a disponib nan timeline
- *     TheSportsDB (SPORTS_WITH_GOALS). Anvan, chan "scorer" te sèlman
- *     repete non ekip la — pa t janm gen non jwè a pou gòl.
- *  2. OPTIMIZE: timeline match la (lookuptimeline.php) kounye a chèche
- *     YON SÈL FWA pa match pa sik (anvan, li te ka evantyèlman itil pou
- *     plizyè bagay san rejwenn), epi itilize pou detekte GÒL, KATON, AK
- *     CHANJMAN ansanm — mwens apèl API, mwens chans pou erè kota.
- *  3. 🆕 FIX CHANJMAN (substitution): notifikasyon an kounye a montre
- *     TOULE 2 jwè yo — jwè ki ANTRE a (`strPlayer`) AK jwè ki SOTI a
- *     (`strAssist`, chan TheSportsDB itilize pou sa). Anvan, sèl jwè
- *     ki antre a te parèt.
- *  4. AJOUTE: wout "/notify/admin-push" — voye yon push FCM bay
- *     TELEFÒN ADMIN yo (koleksyon Firestore `adminPushTokens`, ranpli
- *     lè admin klike "Aktive Notif Menm Si Aplikasyon Fèmen" nan
- *     Admin.html) chak fwa gen yon nouvo mesaj kontak, demann Premium,
- *     oswa demann reset modpas nan index.html. Sèvi ak MENM Kont Sèvis
- *     Firebase (FIREBASE_SERVICE_ACCOUNT) ak menm fonksyon sendPush()
- *     ki deja egziste pou notifikasyon match yo — pa gen okenn nouvo
- *     sekrè pou ajoute.
- *  5. 🆕 AJOUTE: wout "/notify/user-push" — voye yon push FCM bay YON
- *     SÈL telefòn ITILIZATÈ espesifik. Sèvi pou lè ADMIN reponn yon
- *     moun nan tchat "Kontak" la (koleksyon Firestore `contactMessages`,
- *     chan `pushToken` ki ranpli otomatikman pa index.html) — konsa
- *     moun nan resevwa yon notifikasyon menm si telefòn/app li fèmen.
- *     Diferan de /notify/admin-push: li resevwa TOKEN an DIRÈKTEMAN nan
- *     kò rekèt la (pa gen okenn lis Firestore pou chèche), paske se yon
- *     sèl moun espesifik n ap voye bay, pa tout admin yo.
- *  6. Rès kòd la (Moncash, Natcash, AI, pushQueue, elatriye) rete
- *     EGZAKTEMAN menm jan ak orijinal la — pa gen okenn lòt chanjman.
+ *  🆕 AJOUTE: sistèm "kloch pa chanpyona" — chak telefòn (dokiman
+ *     fcmTokens) kounye a ka gen yon chan `mutedLeagues` (yon lis non
+ *     lig/chanpyona itilizatè a te "silans lan" nan index.html, egzanp:
+ *     ["FIFA World Cup", "Ligue 1"]). Kloch la sove chwa a de kote:
+ *     localStorage (sou telefòn nan, pou UI a) AK Firestore (pou
+ *     Worker la ka konnen l lè l ap voye push).
+ *     → `getFcmTokens()` kounye a li chan `mutedLeagues` la (yon
+ *       arrayValue Firestore) epi tounen l tankou yon lis JS sou chak
+ *       objè token.
+ *     → `checkMatchesAndNotify()` kounye a FILTRE `targetTokens` yo:
+ *       si `ev.league` (non chanpyona match la, ki soti nan
+ *       `ev.strLeague`) twouve nan `t.mutedLeagues` telefòn nan, nou
+ *       PA voye push bay telefòn sa a pou nòtifikasyon sa a — rès
+ *       chanpyona yo kontinye ap voye jan nòmal.
+ *     → Rès filtraj pa spò a (`t.sport === ev.sport`) rete menm jan.
  *
- * Tout kle sekrè (Moncash, Natcash, Claude, Groq, Perplexity) rete
- * ISIT LA SÈLMAN, kòm "Secrets" nan Cloudflare. Telefòn moun yo
- * (index.html) sèlman rele wout sa yo — yo pa janm wè okenn kle.
+ * (tout lòt chanjman ki te fèt anvan yo — non jwè nan gòl, chanjman
+ * ki montre 2 jwè, timeline 1 sèl fwa, /notify/admin-push,
+ * /notify/user-push — rete egzakteman menm jan, san okenn lòt
+ * modifikasyon.)
  * -----------------------------------------------------------------
  */
 
@@ -100,7 +86,7 @@ export default {
       if (path === "/notify/admin-push" && request.method === "POST")
         return await notifyAdminPush(request, env);
 
-      // 🆕 Voye push FCM bay YON SÈL telefòn ITILIZATÈ (egzanp: lè Admin
+      // Voye push FCM bay YON SÈL telefòn ITILIZATÈ (egzanp: lè Admin
       // reponn yon mesaj nan tchat Kontak la)
       if (path === "/notify/user-push" && request.method === "POST")
         return await notifyUserPush(request, env);
@@ -537,7 +523,7 @@ function buildAutoNotif(sport, evType, lang, data) {
 }
 
 async function checkMatchesAndNotify(env) {
-  const log = { checked: 0, notifications: 0, errors: [], statusesSeen: [] };
+  const log = { checked: 0, notifications: 0, muted: 0, errors: [], statusesSeen: [] };
 
   try {
     const events = await fetchLiveEvents(env);
@@ -652,7 +638,22 @@ async function checkMatchesAndNotify(env) {
     const tokens = await getFcmTokens(env, accessToken, projectId);
 
     for (const ev of toNotify) {
-      const targetTokens = tokens.filter((t) => (t.sport || "Soccer") === ev.sport);
+      // 🆕 Filtraj an 2 etap:
+      //   1) menm spò a (jan l te fèt deja)
+      //   2) telefòn nan PA gen chanpyona match la (`ev.league`) nan
+      //      lis `mutedLeagues` li — si l genyen l, nou konte l "silans"
+      //      epi nou PA voye push la bay telefòn sa a.
+      const targetTokens = [];
+      for (const t of tokens) {
+        if ((t.sport || "Soccer") !== ev.sport) continue;
+        const muted = Array.isArray(t.mutedLeagues) && ev.league && t.mutedLeagues.includes(ev.league);
+        if (muted) {
+          log.muted++;
+          continue;
+        }
+        targetTokens.push(t);
+      }
+
       for (const t of targetTokens) {
         try {
           const data = {
@@ -796,10 +797,22 @@ async function getFcmTokens(env, accessToken, projectId) {
     if (!raw) return;
     const token = raw.trim();
     if (!token) return;
+
+    // 🆕 Chan mutedLeagues: yon arrayValue Firestore (lis strengValue).
+    // fsValueToJs konvèti l an yon vrè lis JS (string[]). Si chan an pa
+    // egziste (ansyen dokiman anvan fonksyonalite sa a), lis la vid.
+    const mutedRaw = doc.fields?.mutedLeagues;
+    let mutedLeagues = [];
+    if (mutedRaw) {
+      const parsed = fsValueToJs(mutedRaw);
+      if (Array.isArray(parsed)) mutedLeagues = parsed.filter((x) => typeof x === "string");
+    }
+
     byToken.set(token, {
       token,
       lang: doc.fields?.lang?.stringValue || "ht",
       sport: doc.fields?.sport?.stringValue || "Soccer",
+      mutedLeagues,
       docName: doc.name,
     });
   });
@@ -867,28 +880,11 @@ async function notifyAdminPush(request, env) {
   }
 }
 
-/* ══════════════════ 🆕 NOTIFIKASYON ITILIZATÈ (repons Admin nan tchat Kontak) ══════════════════ */
+/* ══════════════════ NOTIFIKASYON ITILIZATÈ (repons Admin nan tchat Kontak) ══════════════════ */
 // Diferan de notifyAdminPush pi wo a: isit la nou pa chèche okenn lis nan
 // Firestore — nou resevwa YON SÈL token dirèkteman nan kò (body) rekèt la,
 // paske se yon SÈL moun espesifik n ap voye bay (moun ki t ap tann repons
 // Admin nan tchat Kontak la), pa tout admin yo.
-//
-// Admin.html dwe rele wout sa a APRE li fin anrejistre repons li nan
-// Firestore (contactMessages.messages arrayUnion sender:'admin'), lè l li
-// chan `pushToken` ki deja sou dokiman contactMessages sa a (index.html
-// ranpli chan sa a otomatikman — gade fonksyon syncPushTokenToContactThread()
-// nan index.html).
-//
-// Egzanp apèl (nan Admin.html):
-//   fetch("https://TON-WORKER-URL/notify/user-push", {
-//     method:"POST", headers:{"Content-Type":"application/json"},
-//     body: JSON.stringify({
-//       token: threadDoc.pushToken,
-//       title: "Admin — Score Vision",
-//       body: texRepons,
-//       target: "contact"
-//     })
-//   });
 
 async function notifyUserPush(request, env) {
   if (!env.FIREBASE_SERVICE_ACCOUNT) {
@@ -921,9 +917,6 @@ async function notifyUserPush(request, env) {
     );
     return json({ ok: true, sent: 1 });
   } catch (e) {
-    // Si token lan mouri (moun nan dezenstale app la, retire pèmisyon
-    // notifikasyon, elatriye), nou di Admin.html sa a avèk invalidToken:true
-    // pou li ka retire chan pushToken sou dokiman contactMessages a si l vle.
     return json({ error: e.message || "Erè sèvè", invalidToken: !!e.invalidToken }, 500);
   }
 }
