@@ -50,6 +50,12 @@ export default {
       if (path === "/sports/eventstats" && request.method === "GET")
         return await sportsEventStats(request, env);
 
+      // 🆕 Estatistik REYÈL ekip yo (5 dènye match + klasman) pou ranfòse
+      // analiz IA a pou match ki poko kòmanse (NS), an konplman ak
+      // rechèch Google la — pa ranplase l.
+      if (path === "/sports/teamform" && request.method === "GET")
+        return await sportsTeamForm(request, env);
+
       if (path === "/ai/chat" && request.method === "POST")
         return await aiClaude(request, env);
       if (path === "/ai/groq" && request.method === "POST")
@@ -351,6 +357,112 @@ async function sportsEventStats(request, env) {
     event: eventData?.events?.[0] || null,
     stats: statsData?.eventstats || null,
     timeline: timelineData?.timeline || null,
+  });
+}
+
+/* 🆕 ══════════════════ FÒM EKIP (5 dènye match + klasman) ══════════════════ */
+
+async function sportsTeamForm(request, env) {
+  const url = new URL(request.url);
+  const home = url.searchParams.get("home");
+  const away = url.searchParams.get("away");
+  if (!home || !away) return json({ error: "Paramèt 'home' ak 'away' obligatwa" }, 400);
+
+  const key = env.SPORTS_API_KEY || "123";
+
+  // 1️⃣ Jwenn ID + lig chak ekip apati non yo
+  const findTeam = async (name) => {
+    try {
+      const res = await fetch(
+        `https://www.thesportsdb.com/api/v1/json/${key}/searchteams.php?t=${encodeURIComponent(name)}`
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data?.teams?.[0] || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const [homeTeam, awayTeam] = await Promise.all([findTeam(home), findTeam(away)]);
+
+  // 2️⃣ 5 dènye match chak ekip te jwe (nenpòt konpetisyon)
+  const lastEvents = async (idTeam) => {
+    if (!idTeam) return [];
+    try {
+      const res = await fetch(
+        `https://www.thesportsdb.com/api/v1/json/${key}/eventslast.php?id=${encodeURIComponent(idTeam)}`
+      );
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data?.results || [];
+    } catch {
+      return [];
+    }
+  };
+
+  // 3️⃣ Klasman aktyèl nan lig prensipal ekip la (si TheSportsDB gen li)
+  const standing = async (idLeague) => {
+    if (!idLeague) return null;
+    try {
+      const res = await fetch(
+        `https://www.thesportsdb.com/api/v1/json/${key}/lookuptable.php?l=${encodeURIComponent(idLeague)}`
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data?.table || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const [homeLast, awayLast, homeTable, awayTable] = await Promise.all([
+    lastEvents(homeTeam?.idTeam),
+    lastEvents(awayTeam?.idTeam),
+    standing(homeTeam?.idLeague),
+    standing(awayTeam?.idLeague),
+  ]);
+
+  const rankIn = (table, idTeam) => {
+    if (!Array.isArray(table) || !idTeam) return null;
+    const row = table.find((r) => String(r.idTeam) === String(idTeam));
+    if (!row) return null;
+    return {
+      rank: row.intRank,
+      played: row.intPlayed,
+      win: row.intWin,
+      draw: row.intDraw,
+      loss: row.intLoss,
+      goalsFor: row.intGoalsFor,
+      goalsAgainst: row.intGoalsAgainst,
+      points: row.intPoints,
+    };
+  };
+
+  const shapeLast = (events) =>
+    (events || []).slice(0, 5).map((e) => ({
+      date: e.dateEvent,
+      league: e.strLeague,
+      home: e.strHomeTeam,
+      away: e.strAwayTeam,
+      score: `${e.intHomeScore ?? "?"}-${e.intAwayScore ?? "?"}`,
+    }));
+
+  return json({
+    home: {
+      team: homeTeam?.strTeam || home,
+      idTeam: homeTeam?.idTeam || null,
+      league: homeTeam?.strLeague || null,
+      last5: shapeLast(homeLast),
+      standing: rankIn(homeTable, homeTeam?.idTeam),
+    },
+    away: {
+      team: awayTeam?.strTeam || away,
+      idTeam: awayTeam?.idTeam || null,
+      league: awayTeam?.strLeague || null,
+      last5: shapeLast(awayLast),
+      standing: rankIn(awayTable, awayTeam?.idTeam),
+    },
   });
 }
 
