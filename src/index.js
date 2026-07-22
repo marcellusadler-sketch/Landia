@@ -1,28 +1,11 @@
 /**
  * Score Vision — Secure Worker (VÈSYON KORIJE + KLOCH PA CHANPYONA)
  * -----------------------------------------------------------------
- * NOUVO CHANJMAN NAN VÈSYON SA A (konpare ak vèsyon anvan an):
- *
- *  🆕 AJOUTE: sistèm "kloch pa chanpyona" — chak telefòn (dokiman
- *     fcmTokens) kounye a ka gen yon chan `mutedLeagues` (yon lis non
- *     lig/chanpyona itilizatè a te "silans lan" nan index.html, egzanp:
- *     ["FIFA World Cup", "Ligue 1"]). Kloch la sove chwa a de kote:
- *     localStorage (sou telefòn nan, pou UI a) AK Firestore (pou
- *     Worker la ka konnen l lè l ap voye push).
- *     → `getFcmTokens()` kounye a li chan `mutedLeagues` la (yon
- *       arrayValue Firestore) epi tounen l tankou yon lis JS sou chak
- *       objè token.
- *     → `checkMatchesAndNotify()` kounye a FILTRE `targetTokens` yo:
- *       si `ev.league` (non chanpyona match la, ki soti nan
- *       `ev.strLeague`) twouve nan `t.mutedLeagues` telefòn nan, nou
- *       PA voye push bay telefòn sa a pou nòtifikasyon sa a — rès
- *       chanpyona yo kontinye ap voye jan nòmal.
- *     → Rès filtraj pa spò a (`t.sport === ev.sport`) rete menm jan.
- *
- * (tout lòt chanjman ki te fèt anvan yo — non jwè nan gòl, chanjman
- * ki montre 2 jwè, timeline 1 sèl fwa, /notify/admin-push,
- * /notify/user-push — rete egzakteman menm jan, san okenn lòt
- * modifikasyon.)
+ * 🆕 CHANJMAN NAN VÈSYON SA A:
+ *  → aiGemini() kounye a pase paramèt `tools` la (si li prezan nan kò
+ *    rekèt la) bay Gemini — sa pèmèt Worker la sèvi ak "grounding"
+ *    (rechèch Google Search reyèl) pou kesyon sou match/rezilta espò,
+ *    olye pou modèl la envante repons apati memwa li.
  * -----------------------------------------------------------------
  */
 
@@ -32,12 +15,6 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-// 🔗 LYEN PIBLIK LOGO SCORE VISION LA — sa a se icon ki parèt sou CHAK
-// notifikasyon otomatik (menm jan Sofascore toujou montre pwòp logo li,
-// kèlkeswa match la). Li DWE yon URL https:// piblik (Firebase Storage,
-// Cloudflare R2/Pages, ImgBB, elatriye) — yon data:base64 PA ka mache
-// paske sèvè FCM dwe telechaje l li menm. Ranplase valè a anba a ak
-// vrè lyen logo Score Vision ou a.
 const SCORE_VISION_LOGO_URL = "https://REMPLASE-AK-LYEN-LOGO-SCORE-VISION.png";
 
 function json(data, status = 200) {
@@ -82,20 +59,15 @@ export default {
       if (path === "/ai/gemini" && request.method === "POST")
         return await aiGemini(request, env);
 
-      // Voye push FCM bay telefòn ADMIN yo (menm si Admin.html fèmen)
       if (path === "/notify/admin-push" && request.method === "POST")
         return await notifyAdminPush(request, env);
 
-      // Voye push FCM bay YON SÈL telefòn ITILIZATÈ (egzanp: lè Admin
-      // reponn yon mesaj nan tchat Kontak la)
       if (path === "/notify/user-push" && request.method === "POST")
         return await notifyUserPush(request, env);
 
-      // Teste manyèlman detèksyon gòl/notifikasyon (menm kòd ki kouri chak 2 minit)
       if (path === "/run" && request.method === "GET")
         return json(await checkMatchesAndNotify(env));
 
-      // Teste manyèlman notifikasyon ki nan liy datant (pushQueue)
       if (path === "/run-queue" && request.method === "GET")
         return json(await processPushQueue(env));
 
@@ -447,6 +419,11 @@ async function aiGemini(request, env) {
         contents: body.contents,
         systemInstruction: body.systemInstruction,
         generationConfig: body.generationConfig,
+        // 🆕 Kite Worker la pase paramèt "tools" bay Gemini (egzanp
+        // grounding ak Google Search: [{google_search:{}}]) — sa
+        // pèmèt repons yo baze sou vrè rechèch entènèt olye pou
+        // modèl la envante enfòmasyon apati memwa li.
+        tools: body.tools,
       }),
     }
   );
@@ -458,12 +435,8 @@ async function aiGemini(request, env) {
 
 const LIVE_SPORTS = ["Soccer", "Basketball", "American Football", "Baseball", "Ice Hockey"];
 
-// Spò kote nou ka jwenn detay "Katon" ak "Chanjman" fyab nan TheSportsDB
 const SPORTS_WITH_CARDS = ["Soccer"];
 const SPORTS_WITH_SUBS = ["Soccer"];
-// Spò kote nou ka jwenn NON JWÈ ki fè gòl la (timeline "Goal") — pou
-// lòt spò yo (Basketball, Baseball, elatriye) nou kontinye voye notifikasyon
-// eskò a san non jwè a, paske TheSportsDB pa bay detay sa a fyab pou yo.
 const SPORTS_WITH_GOALS = ["Soccer"];
 
 const SCORE_LABEL = {
@@ -638,11 +611,6 @@ async function checkMatchesAndNotify(env) {
     const tokens = await getFcmTokens(env, accessToken, projectId);
 
     for (const ev of toNotify) {
-      // 🆕 Filtraj an 2 etap:
-      //   1) menm spò a (jan l te fèt deja)
-      //   2) telefòn nan PA gen chanpyona match la (`ev.league`) nan
-      //      lis `mutedLeagues` li — si l genyen l, nou konte l "silans"
-      //      epi nou PA voye push la bay telefòn sa a.
       const targetTokens = [];
       for (const t of tokens) {
         if ((t.sport || "Soccer") !== ev.sport) continue;
@@ -798,9 +766,6 @@ async function getFcmTokens(env, accessToken, projectId) {
     const token = raw.trim();
     if (!token) return;
 
-    // 🆕 Chan mutedLeagues: yon arrayValue Firestore (lis strengValue).
-    // fsValueToJs konvèti l an yon vrè lis JS (string[]). Si chan an pa
-    // egziste (ansyen dokiman anvan fonksyonalite sa a), lis la vid.
     const mutedRaw = doc.fields?.mutedLeagues;
     let mutedLeagues = [];
     if (mutedRaw) {
@@ -881,10 +846,6 @@ async function notifyAdminPush(request, env) {
 }
 
 /* ══════════════════ NOTIFIKASYON ITILIZATÈ (repons Admin nan tchat Kontak) ══════════════════ */
-// Diferan de notifyAdminPush pi wo a: isit la nou pa chèche okenn lis nan
-// Firestore — nou resevwa YON SÈL token dirèkteman nan kò (body) rekèt la,
-// paske se yon SÈL moun espesifik n ap voye bay (moun ki t ap tann repons
-// Admin nan tchat Kontak la), pa tout admin yo.
 
 async function notifyUserPush(request, env) {
   if (!env.FIREBASE_SERVICE_ACCOUNT) {
