@@ -6,6 +6,12 @@
  *    rekèt la) bay Gemini — sa pèmèt Worker la sèvi ak "grounding"
  *    (rechèch Google Search reyèl) pou kesyon sou match/rezilta espò,
  *    olye pou modèl la envante repons apati memwa li.
+ *  → 🆕 NOUVO: checkNewAdminAlerts() — tcheke otomatikman (chak fwa
+ *    cron lan rive) si gen NOUVO mesaj kontak (`contactMessages`)
+ *    oswa NOUVO demann premium an atant (`premiumRequests`), epi
+ *    voye yon push bay TOUT telefòn admin ki nan `adminPushTokens`.
+ *    Konsa admin lan resevwa notif MENM SI Admin.html fèmen, e MENM
+ *    SI sit prensipal la pa janm rele `/notify/admin-push` limenm.
  * -----------------------------------------------------------------
  */
 
@@ -77,6 +83,11 @@ export default {
       if (path === "/run-queue" && request.method === "GET")
         return json(await processPushQueue(env));
 
+      // 🆕 NOUVO: wout pou teste manyèlman detèksyon nouvo mesaj/demann
+      // (itil pou verifye si tout bagay konfigire byen anvan w tann cron lan)
+      if (path === "/run-admin-alerts" && request.method === "GET")
+        return json(await checkNewAdminAlerts(env));
+
       if (path === "/" ) return json({ ok: true, service: "score-vision-worker" });
 
       return json({ error: "Wout la pa egziste" }, 404);
@@ -89,6 +100,8 @@ export default {
     if (!env.FIREBASE_SERVICE_ACCOUNT) return;
     if (env.SPORTS_API_KEY_V2) ctx.waitUntil(checkMatchesAndNotify(env));
     ctx.waitUntil(processPushQueue(env));
+    // 🆕 NOUVO: tcheke nouvo mesaj kontak / demann premium chak fwa cron lan rive
+    ctx.waitUntil(checkNewAdminAlerts(env));
   },
 };
 
@@ -956,6 +969,117 @@ async function notifyAdminPush(request, env) {
     return json({ error: e.message || "Erè sèvè" }, 500);
   }
 }
+
+/* 🆕 ══════════════════ NOUVO: DETÈKSYON OTOMATIK NOUVO MESAJ/DEMANN ══════════════════
+ * Sa a se pyès ki te MANKE a. Chak fwa cron lan (scheduled) rive, fonksyon sa a:
+ *  1. Li koleksyon `contactMessages` — pou chak dokiman li poko janm wè, li voye
+ *     yon push bay tout telefòn admin ki nan `adminPushTokens`.
+ *  2. Li koleksyon `premiumRequests` (sa ki gen status="pending") — menm bagay.
+ *  3. Li itilize KV `MATCH_STATE` (deja konfigire pou match yo) ak yon prefiks
+ *     diferan (`adminalert:...`) pou l pa notifye 2 fwa pou menm mesaj/demann lan.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+async function fetchCollection(env, accessToken, projectId, name) {
+  const res = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${name}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error(`Firestore ${name} HTTP ${res.status}`);
+  const data = await res.json();
+  return data.documents || [];
+}
+
+async function checkNewAdminAlerts(env) {
+  const log = { newMessages: 0, newPremiumRequests: 0, sent: 0, errors: [] };
+  if (!env.FIREBASE_SERVICE_ACCOUNT) return log;
+
+  try {
+    const accessToken = await getGoogleAccessToken(env);
+    const projectId = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT).project_id;
+
+    const adminTokens = await getAdminPushTokens(env, accessToken, projectId);
+    if (adminTokens.length === 0) {
+      log.errors.push("Pa gen telefòn admin nan adminPushTokens — aktive 'Notif Même Appli Fermée' sou Admin.html anvan.");
+      return log;
+    }
+
+    const alerts = [];
+
+    // ── 1) Mesaj Kontak nouvo ──
+    try {
+      const msgDocs = await fetchCollection(env, accessToken, projectId, "contactMessages");
+      for (const doc of msgDocs) {
+        const id = doc.name.split("/").pop();
+        const kvKey = `adminalert:msg:${id}`;
+        const already = await env.MATCH_STATE.get(kvKey);
+        if (already) continue;
+        await env.MATCH_STATE.put(kvKey, "1"); // make l imedyatman pou pa dwoub-notifye si gen erè apre
+
+        const d = fsFieldsToObj(doc.fields || {});
+        const displayName = d.name || (d.guestId ? "Vizitè #" + String(d.guestId).slice(-6) : "Vizitè");
+        const firstText = Array.isArray(d.messages) && d.messages.length
+          ? (d.messages[0].text || (d.messages[0].imageUrl ? "📎 Screenshot" : ""))
+          : (d.message || "");
+
+        alerts.push({
+          title: "Nouvo Mesaj Kontak",
+          body: displayName + (firstText ? ": " + String(firstText).slice(0, 100) : ""),
+        });
+        log.newMessages++;
+      }
+    } catch (ex) {
+      log.errors.push("contactMessages: " + ex.message);
+    }
+
+    // ── 2) Demann Premium nouvo (an atant) ──
+    try {
+      const reqDocs = await fetchCollection(env, accessToken, projectId, "premiumRequests");
+      for (const doc of reqDocs) {
+        const id = doc.name.split("/").pop();
+        const d = fsFieldsToObj(doc.fields || {});
+        if ((d.status || "pending") !== "pending") continue;
+
+        const kvKey = `adminalert:prem:${id}`;
+        const already = await env.MATCH_STATE.get(kvKey);
+        if (already) continue;
+        await env.MATCH_STATE.put(kvKey, "1");
+
+        alerts.push({
+          title: "Nouvo Demann Premium",
+          body: (d.name || "Yon moun") + " — " + (d.plan || 1) + " mwa" + (d.method ? " (" + d.method + ")" : ""),
+        });
+        log.newPremiumRequests++;
+      }
+    } catch (ex) {
+      log.errors.push("premiumRequests: " + ex.message);
+    }
+
+    if (alerts.length === 0) return log;
+
+    // ── 3) Voye chak alèt bay tout telefòn admin ──
+    for (const alert of alerts) {
+      for (const t of adminTokens) {
+        try {
+          await sendPush(accessToken, projectId, t.token, alert.title, alert.body, SCORE_VISION_LOGO_URL);
+          log.sent++;
+        } catch (e) {
+          log.errors.push(e.message);
+          if (e.invalidToken && t.docName) {
+            try {
+              await deleteFcmToken(accessToken, t.docName);
+            } catch (_) {}
+          }
+        }
+      }
+    }
+  } catch (e) {
+    log.errors.push(e.message);
+  }
+
+  return log;
+}
+/* 🆕 ══════════════════ FEN SEKSYON NOUVO ══════════════════ */
 
 /* ══════════════════ NOTIFIKASYON ITILIZATÈ (repons Admin nan tchat Kontak) ══════════════════ */
 
